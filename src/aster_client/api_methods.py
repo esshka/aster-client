@@ -156,7 +156,7 @@ class APIMethods:
             filled_quantity=Decimal(str(safe_get(data, "filled_quantity", 0))),
             remaining_quantity=Decimal(str(safe_get(data, "remaining_quantity", 0))),
             average_price=Decimal(str(safe_get(data, "average_price", 0))) if safe_get(data, "average_price") else None,
-            timestamp=convert_timestamp_ms(safe_get(data, "timestamp", 0)),
+            timestamp=convert_timestamp_ms(safe_get(data, "timestamp", 0)) or 0,
         )
 
     async def cancel_order(self, session: ClientSession, order_id: str) -> Dict[str, Any]:
@@ -192,7 +192,7 @@ class APIMethods:
                 filled_quantity=Decimal(str(safe_get(data, "filled_quantity", 0))),
                 remaining_quantity=Decimal(str(safe_get(data, "remaining_quantity", 0))),
                 average_price=Decimal(str(safe_get(data, "average_price", 0))) if safe_get(data, "average_price") else None,
-                timestamp=convert_timestamp_ms(safe_get(data, "timestamp", 0)),
+                timestamp=convert_timestamp_ms(safe_get(data, "timestamp", 0)) or 0,
             )
         except (ValueError, TypeError, InvalidOperation) as e:
             logger.error(f"Failed to parse order data: {e}")
@@ -228,7 +228,7 @@ class APIMethods:
                 filled_quantity=Decimal(str(safe_get(order_data, "filled_quantity", 0))),
                 remaining_quantity=Decimal(str(safe_get(order_data, "remaining_quantity", 0))),
                 average_price=Decimal(str(safe_get(order_data, "average_price", 0))) if safe_get(order_data, "average_price") else None,
-                timestamp=convert_timestamp_ms(safe_get(order_data, "timestamp", 0)),
+                timestamp=convert_timestamp_ms(safe_get(order_data, "timestamp", 0)) or 0,
             ))
 
         return orders
@@ -248,7 +248,7 @@ class APIMethods:
             return MarkPrice(
                 symbol=safe_get(data, "symbol", ""),
                 mark_price=Decimal(str(safe_get(data, "mark_price", 0))),
-                timestamp=convert_timestamp_ms(safe_get(data, "timestamp", 0)),
+                timestamp=convert_timestamp_ms(safe_get(data, "timestamp", 0)) or 0,
                 funding_rate=Decimal(str(safe_get(data, "funding_rate", 0))) if safe_get(data, "funding_rate") else None,
                 next_funding_time=convert_timestamp_ms(safe_get(data, "next_funding_time")),
             )
