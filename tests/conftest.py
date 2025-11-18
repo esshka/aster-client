@@ -10,7 +10,12 @@ from unittest.mock import Mock, AsyncMock
 from typing import Dict, Any, List
 
 from aster_client.public_client import AsterPublicClient
+from aster_client.account_client import AsterClient
 from aster_client.models.market import SymbolInfo
+from aster_client.models import (
+    AccountInfo, Balance, Position, OrderRequest, OrderResponse,
+    ConnectionConfig, RetryConfig, MarkPrice
+)
 
 
 # Mock data fixtures
@@ -279,3 +284,335 @@ def mock_client_session():
     session.close = AsyncMock()
     session.closed = False
     return session
+
+
+# Account client fixtures
+@pytest.fixture
+def account_info_response_data() -> Dict[str, Any]:
+    """Mock account info response data."""
+    return {
+        "account_id": "acc_1234567890",
+        "account_type": "margin",
+        "status": "active",
+        "buying_power": "100000.00",
+        "day_trading_buying_power": "100000.00",
+        "reg_t_buying_power": "50000.00",
+        "cash": "25000.00",
+        "portfolio_value": "75000.00",
+        "equity": "75000.00",
+        "last_equity": "73000.00",
+        "multiplier": "4",
+        "initial_margin": "12500.00",
+        "maintenance_margin": "6250.00",
+        "long_market_value": "50000.00",
+        "short_market_value": "0.00",
+        "accrued_fees": "12.50",
+        "portfolio_equity": "75000.00"
+    }
+
+
+@pytest.fixture
+def positions_response_data() -> List[Dict[str, Any]]:
+    """Mock positions response data."""
+    return [
+        {
+            "asset_id": "btc_123456",
+            "symbol": "BTCUSDT",
+            "exchange": "asterdex",
+            "asset_class": "crypto",
+            "avg_entry_price": "45000.00",
+            "quantity": "1.5",
+            "side": "long",
+            "market_value": "75000.00",
+            "cost_basis": "67500.00",
+            "unrealized_pl": "7500.00",
+            "unrealized_plpc": "0.1111",
+            "current_price": "50000.00",
+            "lastday_price": "47000.00",
+            "change_today": "0.0638"
+        },
+        {
+            "asset_id": "eth_123457",
+            "symbol": "ETHUSDT",
+            "exchange": "asterdex",
+            "asset_class": "crypto",
+            "avg_entry_price": "3200.00",
+            "quantity": "10.0",
+            "side": "long",
+            "market_value": "40000.00",
+            "cost_basis": "32000.00",
+            "unrealized_pl": "8000.00",
+            "unrealized_plpc": "0.25",
+            "current_price": "4000.00",
+            "lastday_price": "3900.00",
+            "change_today": "0.0256"
+        }
+    ]
+
+
+@pytest.fixture
+def balances_response_data() -> List[Dict[str, Any]]:
+    """Mock balances response data."""
+    return [
+        {
+            "asset_id": "usdt_123456",
+            "currency": "USDT",
+            "cash": "25000.00",
+            "tradeable": True,
+            "pending_buy": "0.00",
+            "pending_sell": "0.00"
+        },
+        {
+            "asset_id": "btc_123457",
+            "currency": "BTC",
+            "cash": "0.5",
+            "tradeable": True,
+            "pending_buy": "0.00",
+            "pending_sell": "0.00"
+        },
+        {
+            "asset_id": "eth_123458",
+            "currency": "ETH",
+            "cash": "2.0",
+            "tradeable": True,
+            "pending_buy": "100.00",
+            "pending_sell": "0.00"
+        }
+    ]
+
+
+@pytest.fixture
+def order_request_data() -> Dict[str, Any]:
+    """Mock order request data."""
+    return {
+        "symbol": "BTCUSDT",
+        "side": "buy",
+        "order_type": "limit",
+        "quantity": "1.0",
+        "price": "49000.00",
+        "time_in_force": "gtc",
+        "client_order_id": "client_order_123456"
+    }
+
+
+@pytest.fixture
+def order_response_data() -> Dict[str, Any]:
+    """Mock order response data."""
+    return {
+        "order_id": "order_1234567890",
+        "client_order_id": "client_order_123456",
+        "symbol": "BTCUSDT",
+        "side": "buy",
+        "order_type": "limit",
+        "quantity": "1.0",
+        "price": "49000.00",
+        "status": "filled",
+        "filled_quantity": "1.0",
+        "remaining_quantity": "0.0",
+        "average_price": "48950.00",
+        "timestamp": 1640995200000
+    }
+
+
+@pytest.fixture
+def mark_price_response_data() -> Dict[str, Any]:
+    """Mock mark price response data."""
+    return {
+        "symbol": "BTCUSDT",
+        "markPrice": "50000.00",
+        "timestamp": 1640995200000,
+        "fundingRate": "0.0001",
+        "nextFundingTime": 1640995800000
+    }
+
+
+@pytest.fixture
+def sample_order_request() -> OrderRequest:
+    """Sample OrderRequest object for testing."""
+    return OrderRequest(
+        symbol="BTCUSDT",
+        side="buy",
+        order_type="limit",
+        quantity=Decimal("1.0"),
+        price=Decimal("49000.00"),
+        time_in_force="gtc",
+        client_order_id="client_order_123456"
+    )
+
+
+@pytest.fixture
+def sample_order_response() -> OrderResponse:
+    """Sample OrderResponse object for testing."""
+    return OrderResponse(
+        order_id="order_1234567890",
+        client_order_id="client_order_123456",
+        symbol="BTCUSDT",
+        side="buy",
+        order_type="limit",
+        quantity=Decimal("1.0"),
+        price=Decimal("49000.00"),
+        status="filled",
+        filled_quantity=Decimal("1.0"),
+        remaining_quantity=Decimal("0.0"),
+        average_price=Decimal("48950.00"),
+        timestamp=1640995200000
+    )
+
+
+@pytest.fixture
+def sample_account_info() -> AccountInfo:
+    """Sample AccountInfo object for testing."""
+    return AccountInfo(
+        account_id="acc_1234567890",
+        account_type="margin",
+        status="active",
+        buying_power=Decimal("100000.00"),
+        day_trading_buying_power=Decimal("100000.00"),
+        reg_t_buying_power=Decimal("50000.00"),
+        cash=Decimal("25000.00"),
+        portfolio_value=Decimal("75000.00"),
+        equity=Decimal("75000.00"),
+        last_equity=Decimal("73000.00"),
+        multiplier="4",
+        initial_margin=Decimal("12500.00"),
+        maintenance_margin=Decimal("6250.00"),
+        long_market_value=Decimal("50000.00"),
+        short_market_value=Decimal("0.00"),
+        accrued_fees=Decimal("12.50"),
+        portfolio_equity=Decimal("75000.00")
+    )
+
+
+@pytest.fixture
+def sample_positions() -> List[Position]:
+    """Sample Position objects for testing."""
+    return [
+        Position(
+            asset_id="btc_123456",
+            symbol="BTCUSDT",
+            exchange="asterdex",
+            asset_class="crypto",
+            avg_entry_price=Decimal("45000.00"),
+            quantity=Decimal("1.5"),
+            side="long",
+            market_value=Decimal("75000.00"),
+            cost_basis=Decimal("67500.00"),
+            unrealized_pl=Decimal("7500.00"),
+            unrealized_plpc=Decimal("0.1111"),
+            current_price=Decimal("50000.00"),
+            lastday_price=Decimal("47000.00"),
+            change_today=Decimal("0.0638")
+        ),
+        Position(
+            asset_id="eth_123457",
+            symbol="ETHUSDT",
+            exchange="asterdex",
+            asset_class="crypto",
+            avg_entry_price=Decimal("3200.00"),
+            quantity=Decimal("10.0"),
+            side="long",
+            market_value=Decimal("40000.00"),
+            cost_basis=Decimal("32000.00"),
+            unrealized_pl=Decimal("8000.00"),
+            unrealized_plpc=Decimal("0.25"),
+            current_price=Decimal("4000.00"),
+            lastday_price=Decimal("3900.00"),
+            change_today=Decimal("0.0256")
+        )
+    ]
+
+
+@pytest.fixture
+def sample_balances() -> List[Balance]:
+    """Sample Balance objects for testing."""
+    return [
+        Balance(
+            asset_id="usdt_123456",
+            currency="USDT",
+            cash=Decimal("25000.00"),
+            tradeable=True,
+            pending_buy=Decimal("0.00"),
+            pending_sell=Decimal("0.00")
+        ),
+        Balance(
+            asset_id="btc_123457",
+            currency="BTC",
+            cash=Decimal("0.5"),
+            tradeable=True,
+            pending_buy=Decimal("0.00"),
+            pending_sell=Decimal("0.00")
+        ),
+        Balance(
+            asset_id="eth_123458",
+            currency="ETH",
+            cash=Decimal("2.0"),
+            tradeable=True,
+            pending_buy=Decimal("100.00"),
+            pending_sell=Decimal("0.00")
+        )
+    ]
+
+
+@pytest.fixture
+def sample_mark_price() -> MarkPrice:
+    """Sample MarkPrice object for testing."""
+    return MarkPrice(
+        symbol="BTCUSDT",
+        mark_price=Decimal("50000.00"),
+        timestamp=1640995200000,
+        funding_rate=Decimal("0.0001"),
+        next_funding_time=1640995800000
+    )
+
+
+@pytest.fixture
+def connection_config() -> ConnectionConfig:
+    """Sample ConnectionConfig for testing."""
+    return ConnectionConfig(
+        api_key="test_api_key_123456",
+        api_secret="test_api_secret_789012",
+        base_url="https://test-api.example.com",
+        timeout=30.0,
+        simulation=True
+    )
+
+
+@pytest.fixture
+def retry_config() -> RetryConfig:
+    """Sample RetryConfig for testing."""
+    return RetryConfig(
+        max_retries=3,
+        retry_delay=1.0
+    )
+
+
+@pytest.fixture
+def account_client(connection_config, retry_config) -> AsterClient:
+    """Create a fresh AsterClient instance for testing."""
+    return AsterClient(connection_config, retry_config)
+
+
+@pytest.fixture
+def account_client_from_env():
+    """Create AsterClient from environment variables."""
+    import os
+    # Set temporary environment variables for testing
+    os.environ["ASTER_API_KEY"] = "test_api_key_env"
+    os.environ["ASTER_API_SECRET"] = "test_api_secret_env"
+
+    client = AsterClient.from_env(simulation=True)
+
+    # Cleanup environment variables after test
+    yield client
+
+    # Clean up
+    os.environ.pop("ASTER_API_KEY", None)
+    os.environ.pop("ASTER_API_SECRET", None)
+
+
+@pytest.fixture
+async def closed_account_client(connection_config):
+    """Create a closed AsterClient for testing error scenarios."""
+    client = AsterClient(connection_config)
+    await client.close()
+    return client

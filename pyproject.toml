@@ -2,14 +2,12 @@
 name = "aster-client"
 version = "0.1.0"
 description = ""
-authors = [
-    {name = "eugeny",email = "esshka@gmail.com"}
-]
+authors = ["eugeny <esshka@gmail.com>"]
 readme = "README.md"
 packages = [{include = "aster_client", from = "src"}]
 
 [tool.poetry.dependencies]
-python = "^3.13"
+python = "^3.11"
 aiohttp = "^3.13.2"
 python-dotenv = "^1.2.1"
 
