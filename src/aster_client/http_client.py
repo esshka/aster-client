@@ -78,16 +78,16 @@ class HttpClient:
         timestamp = str(int(time.time() * 1000))
 
         # Prepare signature payload
-        payload = {
+        payload: Dict[str, Any] = {
             "timestamp": timestamp,
             "method": method.upper(),
             "endpoint": endpoint,
         }
 
         if params:
-            payload["params"] = sorted(params.items())
+            payload["params"] = dict(sorted(params.items()))
         if data:
-            payload["data"] = sorted(data.items())
+            payload["data"] = dict(sorted(data.items()))
 
         # Generate signature
         message = json.dumps(payload, separators=(",", ":"), sort_keys=True)
