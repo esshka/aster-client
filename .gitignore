@@ -1,0 +1,116 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+!frontend/src/lib/
+!frontend/src/lib/**
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+pip-wheel-metadata/
+.python-version
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Type checker caches
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# Poetry local settings
+.poetry/
+
+# Local configuration
+.DS_Store
+.env
+.serena/
+AGENTS.md
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/.svelte-kit/
+frontend/tsconfig.tsbuildinfo
+tmp/
+
+# Trading plans (generated files)
+trading_plans/
+src/ta_ex/hl/config.json
+
+# Database files
+cache.db
+*.db
+*.sqlite
+*.sqlite3
+
+# SQLite WAL files
+*.db-shm
+*.db-wal
+
+# Log files and directories
+logs/
+*.log
+trading_logs_session_*.log
+*.log.*
+
+# Account credentials and sensitive data
+accounts.db
+accounts.db-shm
+accounts.db-wal
+credentials/
+*.key
+*.pem
+*.p12
