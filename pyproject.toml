@@ -13,12 +13,11 @@ python-dotenv = "^1.2.1"
 
 [tool.poetry.group.test]
 optional = true
-dependencies = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.24.0",
-    "aioresponses>=0.7.6",
-    "pytest-mock>=3.14.0"
-]
+[tool.poetry.group.test.dependencies]
+pytest = ">=8.0.0"
+pytest-asyncio = ">=0.24.0"
+aioresponses = ">=0.7.6"
+pytest-mock = ">=3.14.0"
 
 
 [build-system]
