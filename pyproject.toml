@@ -1,4 +1,4 @@
-[project]
+[tool.poetry]
 name = "aster-client"
 version = "0.1.0"
 description = ""
@@ -6,14 +6,21 @@ authors = [
     {name = "eugeny",email = "esshka@gmail.com"}
 ]
 readme = "README.md"
-requires-python = ">=3.13"
-dependencies = [
-    "aiohttp (>=3.13.2,<4.0.0)",
-    "python-dotenv (>=1.2.1,<2.0.0)"
-]
-
-[tool.poetry]
 packages = [{include = "aster_client", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.13"
+aiohttp = "^3.13.2"
+python-dotenv = "^1.2.1"
+
+[tool.poetry.group.test]
+optional = true
+dependencies = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "aioresponses>=0.7.6",
+    "pytest-mock>=3.14.0"
+]
 
 
 [build-system]
