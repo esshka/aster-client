@@ -21,6 +21,14 @@ from .models import (
     Position,
     Balance,
 )
+from .trades import (
+    Trade,
+    TradeOrder,
+    TradeStatus,
+    create_trade,
+    calculate_tp_sl_prices,
+    wait_for_order_fill,
+)
 
 __all__ = [
     "AsterClient",
@@ -37,4 +45,10 @@ __all__ = [
     "AccountInfo",
     "Position",
     "Balance",
+    "Trade",
+    "TradeOrder",
+    "TradeStatus",
+    "create_trade",
+    "calculate_tp_sl_prices",
+    "wait_for_order_fill",
 ]
