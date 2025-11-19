@@ -20,6 +20,56 @@ class MarkPrice:
 
 
 @dataclass(frozen=True)
+class PriceFilter:
+    """Price filter rules."""
+    min_price: Decimal
+    max_price: Decimal
+    tick_size: Decimal
+
+
+@dataclass(frozen=True)
+class LotSizeFilter:
+    """Lot size filter rules."""
+    min_qty: Decimal
+    max_qty: Decimal
+    step_size: Decimal
+
+
+@dataclass(frozen=True)
+class MarketLotSizeFilter:
+    """Market lot size filter rules."""
+    min_qty: Decimal
+    max_qty: Decimal
+    step_size: Decimal
+
+
+@dataclass(frozen=True)
+class MaxNumOrdersFilter:
+    """Maximum number of orders filter."""
+    limit: int
+
+
+@dataclass(frozen=True)
+class MaxNumAlgoOrdersFilter:
+    """Maximum number of algo orders filter."""
+    limit: int
+
+
+@dataclass(frozen=True)
+class PercentPriceFilter:
+    """Percent price filter rules."""
+    multiplier_up: Decimal
+    multiplier_down: Decimal
+    multiplier_decimal: int
+
+
+@dataclass(frozen=True)
+class MinNotionalFilter:
+    """Minimum notional value filter."""
+    notional: Decimal
+
+
+@dataclass(frozen=True)
 class SymbolInfo:
     """Symbol information data structure."""
     symbol: str
@@ -36,6 +86,13 @@ class SymbolInfo:
     step_size: Decimal
     contract_type: Optional[str] = None
     delivery_date: Optional[int] = None
+    price_filter: Optional[PriceFilter] = None
+    lot_size_filter: Optional[LotSizeFilter] = None
+    market_lot_size_filter: Optional[MarketLotSizeFilter] = None
+    max_num_orders_filter: Optional[MaxNumOrdersFilter] = None
+    max_num_algo_orders_filter: Optional[MaxNumAlgoOrdersFilter] = None
+    percent_price_filter: Optional[PercentPriceFilter] = None
+    min_notional_filter: Optional[MinNotionalFilter] = None
 
 
 @dataclass(frozen=True)

@@ -13,7 +13,16 @@ from aiohttp import ClientSession, ClientError, ClientTimeout
 from typing import Dict, Any, Optional
 from decimal import Decimal
 
-from .models.market import SymbolInfo
+from .models.market import (
+    SymbolInfo,
+    PriceFilter,
+    LotSizeFilter,
+    MarketLotSizeFilter,
+    MaxNumOrdersFilter,
+    MaxNumAlgoOrdersFilter,
+    PercentPriceFilter,
+    MinNotionalFilter,
+)
 from .utils import validate_symbol, validate_url
 
 
@@ -187,6 +196,54 @@ class AsterPublicClient:
         for symbol_data in exchange_info["symbols"]:
             if symbol_data["symbol"] == symbol:
                 try:
+                    # Parse filters
+                    price_filter = None
+                    lot_size_filter = None
+                    market_lot_size_filter = None
+                    max_num_orders_filter = None
+                    max_num_algo_orders_filter = None
+                    percent_price_filter = None
+                    min_notional_filter = None
+
+                    for filter_data in symbol_data.get("filters", []):
+                        filter_type = filter_data.get("filterType")
+                        if filter_type == "PRICE_FILTER":
+                            price_filter = PriceFilter(
+                                min_price=Decimal(str(filter_data.get("minPrice", 0))),
+                                max_price=Decimal(str(filter_data.get("maxPrice", 0))),
+                                tick_size=Decimal(str(filter_data.get("tickSize", 0))),
+                            )
+                        elif filter_type == "LOT_SIZE":
+                            lot_size_filter = LotSizeFilter(
+                                min_qty=Decimal(str(filter_data.get("minQty", 0))),
+                                max_qty=Decimal(str(filter_data.get("maxQty", 0))),
+                                step_size=Decimal(str(filter_data.get("stepSize", 0))),
+                            )
+                        elif filter_type == "MARKET_LOT_SIZE":
+                            market_lot_size_filter = MarketLotSizeFilter(
+                                min_qty=Decimal(str(filter_data.get("minQty", 0))),
+                                max_qty=Decimal(str(filter_data.get("maxQty", 0))),
+                                step_size=Decimal(str(filter_data.get("stepSize", 0))),
+                            )
+                        elif filter_type == "MAX_NUM_ORDERS":
+                            max_num_orders_filter = MaxNumOrdersFilter(
+                                limit=int(filter_data.get("limit", 0))
+                            )
+                        elif filter_type == "MAX_NUM_ALGO_ORDERS":
+                            max_num_algo_orders_filter = MaxNumAlgoOrdersFilter(
+                                limit=int(filter_data.get("limit", 0))
+                            )
+                        elif filter_type == "PERCENT_PRICE":
+                            percent_price_filter = PercentPriceFilter(
+                                multiplier_up=Decimal(str(filter_data.get("multiplierUp", 0))),
+                                multiplier_down=Decimal(str(filter_data.get("multiplierDown", 0))),
+                                multiplier_decimal=int(filter_data.get("multiplierDecimal", 0)),
+                            )
+                        elif filter_type == "MIN_NOTIONAL":
+                            min_notional_filter = MinNotionalFilter(
+                                notional=Decimal(str(filter_data.get("notional", 0)))
+                            )
+
                     return SymbolInfo(
                         symbol=symbol_data.get("symbol", ""),
                         base_asset=symbol_data.get("base_asset", ""),
@@ -202,6 +259,13 @@ class AsterPublicClient:
                         step_size=Decimal(str(symbol_data.get("step_size", 0))),
                         contract_type=symbol_data.get("contract_type"),
                         delivery_date=symbol_data.get("delivery_date"),
+                        price_filter=price_filter,
+                        lot_size_filter=lot_size_filter,
+                        market_lot_size_filter=market_lot_size_filter,
+                        max_num_orders_filter=max_num_orders_filter,
+                        max_num_algo_orders_filter=max_num_algo_orders_filter,
+                        percent_price_filter=percent_price_filter,
+                        min_notional_filter=min_notional_filter,
                     )
                 except (ValueError, TypeError) as e:
                     logger.error(f"Failed to parse symbol info data: {e}")
