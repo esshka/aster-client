@@ -58,10 +58,17 @@ class AsterClient:
         """Create client from environment variables."""
         import os
 
+        api_key = os.getenv("ASTER_API_KEY", "")
+        api_secret = os.getenv("ASTER_API_SECRET", "")
+
+        recv_window = int(os.getenv("ASTER_RECV_WINDOW", "5000"))
+        print("api_key", api_key)
+
         config = ConnectionConfig(
-            api_key=os.getenv("ASTER_API_KEY", ""),
-            api_secret=os.getenv("ASTER_API_SECRET", ""),
+            api_key=api_key,
+            api_secret=api_secret,
             simulation=simulation,
+            recv_window=recv_window,
         )
 
         return cls(config)
@@ -185,6 +192,7 @@ def create_aster_client(
     base_url: str = DEFAULT_BASE_URL,
     timeout: float = DEFAULT_TIMEOUT,
     simulation: bool = False,
+    recv_window: int = 5000,
     max_retries: int = DEFAULT_MAX_RETRIES,
     retry_delay: float = DEFAULT_RETRY_DELAY,
 ) -> AsterClient:
@@ -196,7 +204,9 @@ def create_aster_client(
         api_secret: API secret for authentication
         base_url: Base URL for API endpoints
         timeout: Request timeout in seconds
+        timeout: Request timeout in seconds
         simulation: Enable simulation mode
+        recv_window: Receive window in milliseconds (default 5000)
         max_retries: Maximum number of retry attempts
         retry_delay: Initial delay between retries in seconds
 
@@ -209,6 +219,7 @@ def create_aster_client(
         base_url=base_url,
         timeout=timeout,
         simulation=simulation,
+        recv_window=recv_window,
     )
 
     retry_config = RetryConfig(

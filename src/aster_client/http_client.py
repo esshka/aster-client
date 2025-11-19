@@ -16,6 +16,7 @@ from urllib.parse import urlencode
 import aiohttp
 from aiohttp import ClientResponse, ClientSession
 
+from .constants import DEFAULT_RECV_WINDOW
 from .models.config import ConnectionConfig, RetryConfig
 
 
@@ -54,6 +55,10 @@ class HttpClient:
                 method, endpoint, request_params, request_data, request_headers
             )
 
+        # Set content type for POST/PUT requests (form-urlencoded)
+        if method.upper() in ["POST", "PUT"] and request_data:
+            request_headers["Content-Type"] = "application/x-www-form-urlencoded"
+
         # Execute with retry logic
         return await self._execute_with_retry(
             session, method, url, request_params, request_data, request_headers
@@ -74,33 +79,49 @@ class HttpClient:
         data: Dict[str, Any],
         headers: Dict[str, str],
     ) -> None:
-        """Add authentication headers to request."""
+        """Add Binance-style authentication to request."""
         timestamp = str(int(time.time() * 1000))
 
-        # Prepare signature payload
-        payload: Dict[str, Any] = {
-            "timestamp": timestamp,
-            "method": method.upper(),
-            "endpoint": endpoint,
-        }
+        # Prepare parameters for signature
+        if method.upper() == "GET":
+            # For GET requests, signature goes in query params
+            auth_params = params.copy()
+            auth_params["timestamp"] = timestamp
+            auth_params["recvWindow"] = self._config.recv_window
 
-        if params:
-            payload["params"] = dict(sorted(params.items()))
-        if data:
-            payload["data"] = dict(sorted(data.items()))
+            # Create signature from query string
+            query_string = urlencode(sorted(auth_params.items()))
+            signature = hmac.new(
+                self._config.api_secret.encode(),
+                query_string.encode(),
+                hashlib.sha256,
+            ).hexdigest()
 
-        # Generate signature
-        message = json.dumps(payload, separators=(",", ":"), sort_keys=True)
-        signature = hmac.new(
-            self._config.api_secret.encode(),
-            message.encode(),
-            hashlib.sha256,
-        ).hexdigest()
+            # Add signature to params
+            params["timestamp"] = timestamp
+            params["recvWindow"] = self._config.recv_window
+            params["signature"] = signature
+        else:
+            # For POST/PUT requests, signature goes in request body
+            auth_data = data.copy()
+            auth_data["timestamp"] = timestamp
+            auth_data["recvWindow"] = self._config.recv_window
 
-        # Add auth headers
-        headers["X-Api-Key"] = self._config.api_key
-        headers["X-Timestamp"] = timestamp
-        headers["X-Signature"] = signature
+            # Create signature from request body
+            query_string = urlencode(sorted(auth_data.items()))
+            signature = hmac.new(
+                self._config.api_secret.encode(),
+                query_string.encode(),
+                hashlib.sha256,
+            ).hexdigest()
+
+            # Add signature to data
+            data["timestamp"] = timestamp
+            data["recvWindow"] = self._config.recv_window
+            data["signature"] = signature
+
+        # Add API key header (Binance-style)
+        headers["X-MBX-APIKEY"] = self._config.api_key
 
     async def _execute_with_retry(
         self,
@@ -116,13 +137,45 @@ class HttpClient:
 
         for attempt in range(self._retry_config.max_retries + 1):
             try:
-                async with session.request(
-                    method=method,
-                    url=url,
-                    params=params if params else None,
-                    json=data if data else None,
-                    headers=headers,
-                ) as response:
+                # Prepare request kwargs
+                request_kwargs = {
+                    "method": method,
+                    "url": url,
+                    "headers": headers,
+                }
+
+                # Add parameters and data appropriately
+                if params:
+                    # Ensure signature is last if present
+                    params_list = list(params.items())
+                    if "signature" in params:
+                        sig = params["signature"]
+                        # Sort everything except signature
+                        params_list = sorted([(k, v) for k, v in params.items() if k != "signature"])
+                        params_list.append(("signature", sig))
+                    else:
+                        params_list = sorted(params_list)
+                    request_kwargs["params"] = params_list
+
+                if data:
+                    if method.upper() in ["POST", "PUT"]:
+                        # Use form-encoded data for POST/PUT
+                        # Ensure signature is last if present
+                        data_list = list(data.items())
+                        if "signature" in data:
+                            sig = data["signature"]
+                            # Sort everything except signature
+                            data_list = sorted([(k, v) for k, v in data.items() if k != "signature"])
+                            data_list.append(("signature", sig))
+                        else:
+                            data_list = sorted(data_list)
+                        
+                        request_kwargs["data"] = urlencode(data_list)
+                    else:
+                        # Use JSON for other methods if needed
+                        request_kwargs["json"] = data
+
+                async with session.request(**request_kwargs) as response:
                     response_data = await self._process_response(response)
 
                     # Check if response indicates success
@@ -131,6 +184,44 @@ class HttpClient:
 
                     # Don't retry on client errors (4xx)
                     if 400 <= response.status < 500:
+                        # Provide better error messages for common authentication issues
+                        if response.status == 401:
+                            if isinstance(response_data, dict):
+                                code = response_data.get("code", 0)
+                                msg = response_data.get("msg", "Unknown authentication error")
+
+                                if code == -2014 and "API-key format invalid" in msg:
+                                    raise HttpClientClientError(
+                                        f"Authentication failed: API key format is invalid. "
+                                        f"Please check your ASTER_API_KEY environment variable. "
+                                        f"Server error: {msg}",
+                                        status_code=response.status,
+                                        response_data=response_data,
+                                    )
+                                elif code == -2015 and "Invalid API-key" in msg:
+                                    raise HttpClientClientError(
+                                        f"Authentication failed: Invalid API key or IP restrictions. "
+                                        f"Please check your ASTER_API_KEY and any IP whitelist settings. "
+                                        f"Server error: {msg}",
+                                        status_code=response.status,
+                                        response_data=response_data,
+                                    )
+                                elif code == -1022 and "Signature for this request is not valid" in msg:
+                                    raise HttpClientClientError(
+                                        f"Authentication failed: Invalid signature. "
+                                        f"Please check your ASTER_API_SECRET environment variable. "
+                                        f"Server error: {msg}",
+                                        status_code=response.status,
+                                        response_data=response_data,
+                                    )
+
+                            raise HttpClientClientError(
+                                f"Authentication failed: Please check your API credentials. "
+                                f"Server response: {response_data}",
+                                status_code=response.status,
+                                response_data=response_data,
+                            )
+
                         raise HttpClientClientError(
                             f"Client error {response.status}: {response_data}",
                             status_code=response.status,
@@ -179,7 +270,7 @@ class HttpClient:
             return json.loads(response_text)
         except json.JSONDecodeError as e:
             raise HttpClientError(
-                f"Invalid JSON response: {response_text[:200]}",
+                f"Invalid JSON response (Status {response.status}): {response_text[:200]}",
                 status_code=response.status,
             ) from e
 
