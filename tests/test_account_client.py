@@ -40,26 +40,25 @@ class TestAsterClientInit:
     def test_from_env_success(self):
         """Test successful client creation from environment variables."""
         with patch.dict('os.environ', {
-            'ASTER_API_KEY': 'test_key',
-            'ASTER_API_SECRET': 'test_secret'
+            'ASTER_API_KEY': 'test_key_longer_than_20_chars',
+            'ASTER_API_SECRET': 'test_secret_longer_than_20_chars'
         }):
             client = AsterClient.from_env(simulation=True)
-            assert client._config.api_key == 'test_key'
-            assert client._config.api_secret == 'test_secret'
+            assert client._config.api_key == 'test_key_longer_than_20_chars'
+            assert client._config.api_secret == 'test_secret_longer_than_20_chars'
             assert client._config.simulation is True
 
     def test_from_env_missing_variables(self):
         """Test from_env with missing environment variables."""
         with patch.dict('os.environ', {}, clear=True):
-            client = AsterClient.from_env()
-            assert client._config.api_key == ""
-            assert client._config.api_secret == ""
+            with pytest.raises(ValueError, match="API key cannot be empty"):
+                AsterClient.from_env()
 
     def test_create_aster_client_function(self):
         """Test the factory function create_aster_client."""
         client = create_aster_client(
-            api_key="test_key",
-            api_secret="test_secret",
+            api_key="test_key_longer_than_20_chars",
+            api_secret="test_secret_longer_than_20_chars",
             base_url="https://test.api.com",
             timeout=15.0,
             simulation=True,
@@ -67,8 +66,8 @@ class TestAsterClientInit:
             retry_delay=2.0
         )
 
-        assert client._config.api_key == "test_key"
-        assert client._config.api_secret == "test_secret"
+        assert client._config.api_key == "test_key_longer_than_20_chars"
+        assert client._config.api_secret == "test_secret_longer_than_20_chars"
         assert client._config.base_url == "https://test.api.com"
         assert client._config.timeout == 15.0
         assert client._config.simulation is True

@@ -569,8 +569,8 @@ def sample_mark_price() -> MarkPrice:
 def connection_config() -> ConnectionConfig:
     """Sample ConnectionConfig for testing."""
     return ConnectionConfig(
-        api_key="test_api_key_123456",
-        api_secret="test_api_secret_789012",
+        api_key="test_api_key_12345678901234567890",
+        api_secret="test_api_secret_12345678901234567890",
         base_url="https://test-api.example.com",
         timeout=30.0,
         simulation=True
