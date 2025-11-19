@@ -35,12 +35,13 @@ class AsterPublicClient:
     without requiring authentication.
     """
 
-    def __init__(self, base_url: str = "https://fapi.asterdex.com"):
+    def __init__(self, base_url: str = "https://fapi.asterdex.com", auto_warmup: bool = True):
         """
         Initialize the public Aster client.
 
         Args:
             base_url: Base URL for the API
+            auto_warmup: If True, automatically warmup cache when using context manager
         """
         if not validate_url(base_url):
             raise ValueError("Base URL must be a valid HTTP/HTTPS URL")
@@ -59,6 +60,10 @@ class AsterPublicClient:
         self._session = None
         self._timeout = ClientTimeout(total=30)
 
+        # Cache for symbol info (mostly static data)
+        self._symbol_info_cache: Dict[str, SymbolInfo] = {}
+        self._auto_warmup = auto_warmup
+
         logger.info("AsterPublicClient initialized for public market data access")
 
     async def _get_session(self) -> ClientSession:
@@ -74,11 +79,132 @@ class AsterPublicClient:
 
     async def __aenter__(self):
         """Async context manager entry."""
+        if self._auto_warmup:
+            await self.warmup_cache()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
         await self.close()
+
+    def _parse_symbol_data(self, symbol_data: Dict[str, Any]) -> Optional[SymbolInfo]:
+        """
+        Parse raw symbol data into a SymbolInfo object.
+        
+        Args:
+            symbol_data: Raw symbol data from exchange info
+            
+        Returns:
+            Parsed SymbolInfo object or None if parsing fails
+        """
+        try:
+            # Parse filters
+            price_filter = None
+            lot_size_filter = None
+            market_lot_size_filter = None
+            max_num_orders_filter = None
+            max_num_algo_orders_filter = None
+            percent_price_filter = None
+            min_notional_filter = None
+
+            for filter_data in symbol_data.get("filters", []):
+                filter_type = filter_data.get("filterType")
+                if filter_type == "PRICE_FILTER":
+                    price_filter = PriceFilter(
+                        min_price=Decimal(str(filter_data.get("minPrice", 0))),
+                        max_price=Decimal(str(filter_data.get("maxPrice", 0))),
+                        tick_size=Decimal(str(filter_data.get("tickSize", 0))),
+                    )
+                elif filter_type == "LOT_SIZE":
+                    lot_size_filter = LotSizeFilter(
+                        min_qty=Decimal(str(filter_data.get("minQty", 0))),
+                        max_qty=Decimal(str(filter_data.get("maxQty", 0))),
+                        step_size=Decimal(str(filter_data.get("stepSize", 0))),
+                    )
+                elif filter_type == "MARKET_LOT_SIZE":
+                    market_lot_size_filter = MarketLotSizeFilter(
+                        min_qty=Decimal(str(filter_data.get("minQty", 0))),
+                        max_qty=Decimal(str(filter_data.get("maxQty", 0))),
+                        step_size=Decimal(str(filter_data.get("stepSize", 0))),
+                    )
+                elif filter_type == "MAX_NUM_ORDERS":
+                    max_num_orders_filter = MaxNumOrdersFilter(
+                        limit=int(filter_data.get("limit", 0))
+                    )
+                elif filter_type == "MAX_NUM_ALGO_ORDERS":
+                    max_num_algo_orders_filter = MaxNumAlgoOrdersFilter(
+                        limit=int(filter_data.get("limit", 0))
+                    )
+                elif filter_type == "PERCENT_PRICE":
+                    percent_price_filter = PercentPriceFilter(
+                        multiplier_up=Decimal(str(filter_data.get("multiplierUp", 0))),
+                        multiplier_down=Decimal(str(filter_data.get("multiplierDown", 0))),
+                        multiplier_decimal=int(filter_data.get("multiplierDecimal", 0)),
+                    )
+                elif filter_type == "MIN_NOTIONAL":
+                    min_notional_filter = MinNotionalFilter(
+                        notional=Decimal(str(filter_data.get("notional", 0)))
+                    )
+
+            return SymbolInfo(
+                symbol=symbol_data.get("symbol", ""),
+                base_asset=symbol_data.get("base_asset", ""),
+                quote_asset=symbol_data.get("quote_asset", ""),
+                status=symbol_data.get("status", ""),
+                price_precision=symbol_data.get("price_precision", 0),
+                quantity_precision=symbol_data.get("quantity_precision", 0),
+                min_quantity=Decimal(str(symbol_data.get("min_quantity", 0))),
+                max_quantity=Decimal(str(symbol_data.get("max_quantity", 0))),
+                min_notional=Decimal(str(symbol_data.get("min_notional", 0))),
+                max_notional=Decimal(str(symbol_data.get("max_notional", 0))),
+                tick_size=Decimal(str(symbol_data.get("tick_size", 0))),
+                step_size=Decimal(str(symbol_data.get("step_size", 0))),
+                contract_type=symbol_data.get("contract_type"),
+                delivery_date=symbol_data.get("delivery_date"),
+                price_filter=price_filter,
+                lot_size_filter=lot_size_filter,
+                market_lot_size_filter=market_lot_size_filter,
+                max_num_orders_filter=max_num_orders_filter,
+                max_num_algo_orders_filter=max_num_algo_orders_filter,
+                percent_price_filter=percent_price_filter,
+                min_notional_filter=min_notional_filter,
+            )
+        except (ValueError, TypeError) as e:
+            logger.error(f"Failed to parse symbol data: {e}")
+            return None
+
+    async def warmup_cache(self) -> int:
+        """
+        Warmup the symbol info cache by preloading all available symbols.
+        
+        This method fetches exchange info and caches symbol information for all
+        available trading pairs. This is useful to avoid API calls during trading.
+        
+        Returns:
+            Number of symbols cached
+        """
+        logger.info("Warming up symbol info cache...")
+        
+        exchange_info = await self.get_exchange_info()
+        if not exchange_info or "symbols" not in exchange_info:
+            logger.warning("Failed to warmup cache: no exchange info available")
+            return 0
+        
+        cached_count = 0
+        for symbol_data in exchange_info["symbols"]:
+            symbol = symbol_data.get("symbol")
+            if not symbol:
+                continue
+            
+            symbol_info = self._parse_symbol_data(symbol_data)
+            if symbol_info:
+                self._symbol_info_cache[symbol] = symbol_info
+                cached_count += 1
+            else:
+                logger.warning(f"Failed to parse symbol info for {symbol}")
+        
+        logger.info(f"Cache warmed up with {cached_count} symbols")
+        return cached_count
 
     async def _make_request(
         self,
@@ -179,6 +305,8 @@ class AsterPublicClient:
     async def get_symbol_info(self, symbol: str) -> Optional[SymbolInfo]:
         """
         Get information for a specific symbol.
+        
+        This method caches symbol information since it's mostly static.
 
         Args:
             symbol: Trading symbol
@@ -189,87 +317,29 @@ class AsterPublicClient:
         if not validate_symbol(symbol):
             raise ValueError(f"Invalid symbol format: {symbol}")
 
+        # Check cache first
+        if symbol in self._symbol_info_cache:
+            logger.debug(f"Returning cached symbol info for {symbol}")
+            return self._symbol_info_cache[symbol]
+
+        # Fetch from API if not cached
+        logger.debug(f"Fetching symbol info for {symbol} from API")
         exchange_info = await self.get_exchange_info()
         if not exchange_info or "symbols" not in exchange_info:
             return None
 
+
         for symbol_data in exchange_info["symbols"]:
             if symbol_data["symbol"] == symbol:
-                try:
-                    # Parse filters
-                    price_filter = None
-                    lot_size_filter = None
-                    market_lot_size_filter = None
-                    max_num_orders_filter = None
-                    max_num_algo_orders_filter = None
-                    percent_price_filter = None
-                    min_notional_filter = None
-
-                    for filter_data in symbol_data.get("filters", []):
-                        filter_type = filter_data.get("filterType")
-                        if filter_type == "PRICE_FILTER":
-                            price_filter = PriceFilter(
-                                min_price=Decimal(str(filter_data.get("minPrice", 0))),
-                                max_price=Decimal(str(filter_data.get("maxPrice", 0))),
-                                tick_size=Decimal(str(filter_data.get("tickSize", 0))),
-                            )
-                        elif filter_type == "LOT_SIZE":
-                            lot_size_filter = LotSizeFilter(
-                                min_qty=Decimal(str(filter_data.get("minQty", 0))),
-                                max_qty=Decimal(str(filter_data.get("maxQty", 0))),
-                                step_size=Decimal(str(filter_data.get("stepSize", 0))),
-                            )
-                        elif filter_type == "MARKET_LOT_SIZE":
-                            market_lot_size_filter = MarketLotSizeFilter(
-                                min_qty=Decimal(str(filter_data.get("minQty", 0))),
-                                max_qty=Decimal(str(filter_data.get("maxQty", 0))),
-                                step_size=Decimal(str(filter_data.get("stepSize", 0))),
-                            )
-                        elif filter_type == "MAX_NUM_ORDERS":
-                            max_num_orders_filter = MaxNumOrdersFilter(
-                                limit=int(filter_data.get("limit", 0))
-                            )
-                        elif filter_type == "MAX_NUM_ALGO_ORDERS":
-                            max_num_algo_orders_filter = MaxNumAlgoOrdersFilter(
-                                limit=int(filter_data.get("limit", 0))
-                            )
-                        elif filter_type == "PERCENT_PRICE":
-                            percent_price_filter = PercentPriceFilter(
-                                multiplier_up=Decimal(str(filter_data.get("multiplierUp", 0))),
-                                multiplier_down=Decimal(str(filter_data.get("multiplierDown", 0))),
-                                multiplier_decimal=int(filter_data.get("multiplierDecimal", 0)),
-                            )
-                        elif filter_type == "MIN_NOTIONAL":
-                            min_notional_filter = MinNotionalFilter(
-                                notional=Decimal(str(filter_data.get("notional", 0)))
-                            )
-
-                    return SymbolInfo(
-                        symbol=symbol_data.get("symbol", ""),
-                        base_asset=symbol_data.get("base_asset", ""),
-                        quote_asset=symbol_data.get("quote_asset", ""),
-                        status=symbol_data.get("status", ""),
-                        price_precision=symbol_data.get("price_precision", 0),
-                        quantity_precision=symbol_data.get("quantity_precision", 0),
-                        min_quantity=Decimal(str(symbol_data.get("min_quantity", 0))),
-                        max_quantity=Decimal(str(symbol_data.get("max_quantity", 0))),
-                        min_notional=Decimal(str(symbol_data.get("min_notional", 0))),
-                        max_notional=Decimal(str(symbol_data.get("max_notional", 0))),
-                        tick_size=Decimal(str(symbol_data.get("tick_size", 0))),
-                        step_size=Decimal(str(symbol_data.get("step_size", 0))),
-                        contract_type=symbol_data.get("contract_type"),
-                        delivery_date=symbol_data.get("delivery_date"),
-                        price_filter=price_filter,
-                        lot_size_filter=lot_size_filter,
-                        market_lot_size_filter=market_lot_size_filter,
-                        max_num_orders_filter=max_num_orders_filter,
-                        max_num_algo_orders_filter=max_num_algo_orders_filter,
-                        percent_price_filter=percent_price_filter,
-                        min_notional_filter=min_notional_filter,
-                    )
-                except (ValueError, TypeError) as e:
-                    logger.error(f"Failed to parse symbol info data: {e}")
+                symbol_info = self._parse_symbol_data(symbol_data)
+                if symbol_info:
+                    # Cache the result
+                    self._symbol_info_cache[symbol] = symbol_info
+                    return symbol_info
+                else:
+                    logger.error(f"Failed to parse symbol info for {symbol}")
                     return None
+
 
         return None
     
