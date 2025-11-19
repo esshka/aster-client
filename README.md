@@ -168,8 +168,6 @@ asyncio.run(main())
 {
   "symbol": "BTCUSDT",
   "side": "buy",
-  "market_price": "90000.0",
-  "tick_size": "0.1",
   "tp_percent": 1.0,
   "sl_percent": 0.5,
   "ticks_distance": 1,
@@ -185,12 +183,15 @@ asyncio.run(main())
 }
 ```
 
+**Note:** Market price and tick size are automatically fetched from the exchange when the message is processed, ensuring you always use the most current values.
+
 **How it works:**
 1. Listener subscribes to ZMQ publisher
 2. Receives trade command messages with account details
-3. Creates AccountPool with all specified accounts
-4. Executes `create_trade()` in parallel for each account using `asyncio.gather()`
-5. Logs results for each account (success/failure)
+3. Fetches current market price and tick size from the exchange
+4. Creates AccountPool with all specified accounts
+5. Executes `create_trade()` in parallel for each account using `asyncio.gather()`
+6. Logs results for each account (success/failure)
 
 **Use Cases:**
 - Copy trading across multiple accounts
