@@ -78,3 +78,17 @@ class Balance:
     tradeable: bool
     pending_buy: Decimal
     pending_sell: Decimal
+
+
+@dataclass(frozen=True)
+class BalanceV2:
+    """Futures Account Balance V2 data structure."""
+    account_alias: str  # unique account code
+    asset: str  # asset name
+    balance: Decimal  # wallet balance
+    cross_wallet_balance: Decimal  # crossed wallet balance
+    cross_un_pnl: Decimal  # unrealized profit of crossed positions
+    available_balance: Decimal  # available balance
+    max_withdraw_amount: Decimal  # maximum amount for transfer out
+    margin_available: bool  # whether the asset can be used as margin in Multi-Assets mode
+    update_time: int  # timestamp in milliseconds

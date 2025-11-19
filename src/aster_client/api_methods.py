@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 from aiohttp import ClientSession
 
 from .http_client import HttpClient
-from .models.account import AccountInfo, AccountAsset, Position, Balance
+from .models.account import AccountInfo, AccountAsset, Position, Balance, BalanceV2
 from .models.market import MarkPrice, LeverageBracket
 from .models.orders import OrderRequest, OrderResponse, PositionMode
 from .utils import (
@@ -150,6 +150,46 @@ class APIMethods:
                 tradeable=safe_get(bal_data, "marginAvailable", False),
                 pending_buy=Decimal("0"),
                 pending_sell=Decimal("0"),
+            ))
+
+        return balances
+
+    async def get_balances_v2(self, session: ClientSession, recv_window: Optional[int] = None) -> List[BalanceV2]:
+        """Get Futures account balances V2.
+        
+        Args:
+            session: HTTP session
+            recv_window: Optional recv window in milliseconds
+            
+        Returns:
+            List of BalanceV2 objects
+        """
+        params = {}
+        if recv_window is not None:
+            params["recvWindow"] = recv_window
+            
+        response = await self._http_client.request(
+            session, "GET", "/fapi/v2/balance", params=params if params else None
+        )
+        data = clean_response_data(response)
+        
+        # Response is an array of balance objects
+        if not isinstance(data, list):
+            logger.warning(f"Expected list response, got {type(data)}")
+            return []
+        
+        balances = []
+        for bal_data in data:
+            balances.append(BalanceV2(
+                account_alias=safe_get(bal_data, "accountAlias", ""),
+                asset=safe_get(bal_data, "asset", ""),
+                balance=Decimal(str(safe_get(bal_data, "balance", 0))),
+                cross_wallet_balance=Decimal(str(safe_get(bal_data, "crossWalletBalance", 0))),
+                cross_un_pnl=Decimal(str(safe_get(bal_data, "crossUnPnl", 0))),
+                available_balance=Decimal(str(safe_get(bal_data, "availableBalance", 0))),
+                max_withdraw_amount=Decimal(str(safe_get(bal_data, "maxWithdrawAmount", 0))),
+                margin_available=safe_get(bal_data, "marginAvailable", False),
+                update_time=safe_get(bal_data, "updateTime", 0),
             ))
 
         return balances

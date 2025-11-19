@@ -24,7 +24,7 @@ from .constants import (
 )
 from .http_client import HttpClient
 from .models import (
-    AccountInfo, Balance, MarkPrice, OrderRequest, OrderResponse,
+    AccountInfo, Balance, BalanceV2, MarkPrice, OrderRequest, OrderResponse,
     Position, ConnectionConfig, RetryConfig
 )
 from .monitoring import PerformanceMonitor
@@ -88,6 +88,19 @@ class AsterClient:
         """Get account balances."""
         return await self._execute_with_monitoring(
             self._api_methods.get_balances, "GET", "/balances"
+        )
+
+    async def get_balances_v2(self, recv_window: Optional[int] = None) -> list[BalanceV2]:
+        """Get Futures account balances V2.
+        
+        Args:
+            recv_window: Optional recv window in milliseconds
+            
+        Returns:
+            List of BalanceV2 objects containing detailed balance information
+        """
+        return await self._execute_with_monitoring(
+            self._api_methods.get_balances_v2, "GET", "/fapi/v2/balance", recv_window
         )
 
     # Order methods
