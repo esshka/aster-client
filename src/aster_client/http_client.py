@@ -243,7 +243,7 @@ class HttpClient:
                         response_data=response_data,
                     )
 
-            except (HttpServerError, HttpClientClientError, aiohttp.ClientError) as e:
+            except (HttpServerError, aiohttp.ClientError) as e:
                 last_exception = e
 
                 # Don't retry on the last attempt

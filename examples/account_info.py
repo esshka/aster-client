@@ -256,11 +256,14 @@ async def main():
             # Step 5: Get client statistics
             logger.info("Fetching account statistics...")
             try:
-                stats = await client.get_statistics()
+                stats = client.get_statistics()
                 if stats:
                     print_section_header("Account Statistics")
-                    # Note: Print based on actual statistics model structure
-                    logger.info(f"Statistics received: {type(stats)}")
+                    print(f"Total Requests:      {stats.total_requests}")
+                    print(f"Successful:          {stats.successful_requests}")
+                    print(f"Failed:              {stats.failed_requests}")
+                    print(f"Avg Duration:        {stats.avg_duration_ms:.2f} ms")
+                    print(f"Max Duration:        {stats.max_duration_ms:.2f} ms")
             except Exception as e:
                 logger.warning(f"Could not fetch statistics: {e}")
 

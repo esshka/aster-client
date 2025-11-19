@@ -35,6 +35,41 @@ class APIMethods:
         """Initialize API methods with HTTP client."""
         self._http_client = http_client
 
+    def _create_order_response(self, data: Dict[str, Any]) -> OrderResponse:
+        """Create OrderResponse from data dictionary, handling field variations."""
+        # Handle quantity fields
+        orig_qty = Decimal(str(safe_get(data, "origQty") or safe_get(data, "quantity") or 0))
+        executed_qty = Decimal(str(safe_get(data, "executedQty") or safe_get(data, "filled_quantity") or 0))
+        
+        # Calculate remaining if not present
+        remaining_qty = safe_get(data, "remaining_quantity")
+        if remaining_qty is not None:
+            remaining_qty = Decimal(str(remaining_qty))
+        else:
+            remaining_qty = orig_qty - executed_qty
+
+        # Handle price fields
+        price_val = safe_get(data, "price")
+        price = Decimal(str(price_val)) if price_val else None
+        
+        avg_price_val = safe_get(data, "avgPrice") or safe_get(data, "average_price")
+        avg_price = Decimal(str(avg_price_val)) if avg_price_val else None
+
+        return OrderResponse(
+            order_id=str(safe_get(data, "orderId") or safe_get(data, "order_id") or ""),
+            client_order_id=safe_get(data, "clientOrderId") or safe_get(data, "client_order_id"),
+            symbol=safe_get(data, "symbol", ""),
+            side=safe_get(data, "side", ""),
+            order_type=safe_get(data, "type", ""),
+            quantity=orig_qty,
+            price=price,
+            status=safe_get(data, "status", ""),
+            filled_quantity=executed_qty,
+            remaining_quantity=remaining_qty,
+            average_price=avg_price,
+            timestamp=convert_timestamp_ms(safe_get(data, "time") or safe_get(data, "timestamp") or 0) or 0,
+        )
+
     async def get_account_info(self, session: ClientSession) -> AccountInfo:
         """Get account information."""
         response = await self._http_client.request(
@@ -153,20 +188,7 @@ class APIMethods:
         )
         data = clean_response_data(response)
 
-        return OrderResponse(
-            order_id=safe_get(data, "order_id", ""),
-            client_order_id=safe_get(data, "client_order_id"),
-            symbol=safe_get(data, "symbol", ""),
-            side=safe_get(data, "side", ""),
-            order_type=safe_get(data, "type", ""),
-            quantity=Decimal(str(safe_get(data, "quantity", 0))),
-            price=Decimal(str(safe_get(data, "price", 0))) if safe_get(data, "price") else None,
-            status=safe_get(data, "status", ""),
-            filled_quantity=Decimal(str(safe_get(data, "filled_quantity", 0))),
-            remaining_quantity=Decimal(str(safe_get(data, "remaining_quantity", 0))),
-            average_price=Decimal(str(safe_get(data, "average_price", 0))) if safe_get(data, "average_price") else None,
-            timestamp=convert_timestamp_ms(safe_get(data, "timestamp", 0)) or 0,
-        )
+        return self._create_order_response(data)
 
     async def cancel_order(self, session: ClientSession, order_id: str) -> Dict[str, Any]:
         """Cancel an existing order."""
@@ -189,20 +211,7 @@ class APIMethods:
             )
             data = clean_response_data(response)
 
-            return OrderResponse(
-                order_id=safe_get(data, "order_id", ""),
-                client_order_id=safe_get(data, "client_order_id"),
-                symbol=safe_get(data, "symbol", ""),
-                side=safe_get(data, "side", ""),
-                order_type=safe_get(data, "type", ""),
-                quantity=Decimal(str(safe_get(data, "quantity", 0))),
-                price=Decimal(str(safe_get(data, "price", 0))) if safe_get(data, "price") else None,
-                status=safe_get(data, "status", ""),
-                filled_quantity=Decimal(str(safe_get(data, "filled_quantity", 0))),
-                remaining_quantity=Decimal(str(safe_get(data, "remaining_quantity", 0))),
-                average_price=Decimal(str(safe_get(data, "average_price", 0))) if safe_get(data, "average_price") else None,
-                timestamp=convert_timestamp_ms(safe_get(data, "timestamp", 0)) or 0,
-            )
+            return self._create_order_response(data)
         except (ValueError, TypeError, InvalidOperation) as e:
             logger.error(f"Failed to parse order data: {e}")
             return None
@@ -225,29 +234,10 @@ class APIMethods:
 
         orders = []
         for order_data in data if isinstance(data, list) else []:
-            # Calculate remaining quantity
-            orig_qty = Decimal(str(safe_get(order_data, "origQty", 0)))
-            executed_qty = Decimal(str(safe_get(order_data, "executedQty", 0)))
-            remaining_qty = orig_qty - executed_qty
-
-            orders.append(OrderResponse(
-                order_id=str(safe_get(order_data, "orderId", "")),
-                client_order_id=safe_get(order_data, "clientOrderId"),
-                symbol=safe_get(order_data, "symbol", ""),
-                side=safe_get(order_data, "side", ""),
-                order_type=safe_get(order_data, "type", ""),
-                quantity=orig_qty,
-                price=Decimal(str(safe_get(order_data, "price", 0))) if safe_get(order_data, "price") else None,
-                status=safe_get(order_data, "status", ""),
-                filled_quantity=executed_qty,
-                remaining_quantity=remaining_qty,
-                average_price=Decimal(str(safe_get(order_data, "avgPrice", 0))) if safe_get(order_data, "avgPrice") else None,
-                timestamp=convert_timestamp_ms(safe_get(order_data, "time", 0)) or 0,
-            ))
+            orders.append(self._create_order_response(order_data))
 
         return orders
 
-    
     async def get_mark_price(self, session: ClientSession, symbol: str) -> Optional[MarkPrice]:
         """Get mark price for symbol."""
         if not validate_symbol(symbol):
@@ -255,7 +245,7 @@ class APIMethods:
 
         try:
             response = await self._http_client.request(
-                session, "GET", f"/fapi/v1/premiumIndex"
+                session, "GET", "/fapi/v1/premiumIndex", params={"symbol": symbol}
             )
             data = clean_response_data(response)
 

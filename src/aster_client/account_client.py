@@ -13,6 +13,7 @@ The client follows state-first design with clean separation of concerns:
 """
 
 import asyncio
+import os
 import logging
 from typing import Optional
 
@@ -56,13 +57,10 @@ class AsterClient:
     @classmethod
     def from_env(cls, simulation: bool = False) -> "AsterClient":
         """Create client from environment variables."""
-        import os
-
         api_key = os.getenv("ASTER_API_KEY", "")
         api_secret = os.getenv("ASTER_API_SECRET", "")
 
         recv_window = int(os.getenv("ASTER_RECV_WINDOW", "5000"))
-        print("api_key", api_key)
 
         config = ConnectionConfig(
             api_key=api_key,
@@ -117,7 +115,6 @@ class AsterClient:
             self._api_methods.get_orders, "GET", "/orders", symbol
         )
 
-  
     async def get_mark_price(self, symbol: str) -> Optional[MarkPrice]:
         """Get mark price for symbol."""
         return await self._execute_with_monitoring(
@@ -203,7 +200,6 @@ def create_aster_client(
         api_key: API key for authentication
         api_secret: API secret for authentication
         base_url: Base URL for API endpoints
-        timeout: Request timeout in seconds
         timeout: Request timeout in seconds
         simulation: Enable simulation mode
         recv_window: Receive window in milliseconds (default 5000)
