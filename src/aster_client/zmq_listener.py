@@ -18,6 +18,7 @@ import zmq
 import zmq.asyncio
 
 from .account_pool import AccountPool, AccountConfig
+from .public_client import AsterPublicClient
 from .trades import create_trade
 
 logger = logging.getLogger(__name__)
@@ -182,7 +183,6 @@ class ZMQTradeListener:
         logger.info(
             f"Trade command - Symbol: {message.get('symbol', 'N/A')}, "
             f"Side: {message.get('side', 'N/A')}, "
-            f"Market Price: {message.get('market_price', 'N/A')}, "
             f"Accounts: {len(message.get('accounts', []))}, "
             f"TP: {message.get('tp_percent', 'N/A')}%, "
             f"SL: {message.get('sl_percent', 'N/A')}%, "
@@ -212,8 +212,6 @@ class ZMQTradeListener:
             # Extract common trade parameters
             symbol = message["symbol"]
             side = message["side"]
-            market_price = Decimal(str(message["market_price"]))
-            tick_size = Decimal(str(message["tick_size"]))
             tp_percent = float(message["tp_percent"])
             sl_percent = float(message["sl_percent"])
             ticks_distance = int(message.get("ticks_distance", 1))
@@ -222,6 +220,27 @@ class ZMQTradeListener:
             if not accounts_data:
                 logger.warning("No accounts provided in message")
                 return
+            
+            # Fetch market price and tick size from exchange
+            logger.info(f"Fetching market data for {symbol}...")
+            async with AsterPublicClient() as public_client:
+                # Get current market price from ticker
+                ticker = await public_client.get_ticker(symbol)
+                if not ticker or "markPrice" not in ticker:
+                    logger.error(f"Failed to fetch market price for {symbol}")
+                    return
+                
+                market_price = Decimal(str(ticker["markPrice"]))
+                logger.info(f"Market price fetched: {market_price}")
+                
+                # Get tick size from symbol info
+                symbol_info = await public_client.get_symbol_info(symbol)
+                if not symbol_info or not symbol_info.price_filter:
+                    logger.error(f"Failed to fetch symbol info for {symbol}")
+                    return
+                
+                tick_size = symbol_info.price_filter.tick_size
+                logger.info(f"Tick size fetched: {tick_size}")
             
             logger.info(
                 f"Starting trade execution - Symbol: {symbol}, Side: {side}, "

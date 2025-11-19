@@ -16,8 +16,6 @@ def main():
     message = {
         "symbol": "BTCUSDT",
         "side": "buy",
-        "market_price": "90000.0",
-        "tick_size": "0.1",
         "tp_percent": 1.0,
         "sl_percent": 0.5,
         "ticks_distance": 2,
