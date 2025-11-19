@@ -7,7 +7,7 @@ following the state-first principle with immutable data structures.
 
 from .config import ConnectionConfig, RetryConfig
 from .orders import OrderRequest, OrderResponse, PositionMode
-from .account import AccountInfo, AccountAsset, Position, Balance
+from .account import AccountInfo, AccountAsset, Position, Balance, BalanceV2
 from .market import MarkPrice, SymbolInfo, LeverageBracket
 
 __all__ = [
@@ -23,6 +23,7 @@ __all__ = [
     "AccountAsset",
     "Position",
     "Balance",
+    "BalanceV2",
     # Market
     "MarkPrice",
     "SymbolInfo",
