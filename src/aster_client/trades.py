@@ -313,7 +313,7 @@ async def create_trade(
     tp_percent: float,
     sl_percent: float,
     ticks_distance: int = 1,
-    fill_timeout: float = 60.0,
+    fill_timeout: float = 10.0,
     poll_interval: float = 0.5,
     position_side: Optional[str] = None,
 ) -> Trade:
@@ -322,10 +322,11 @@ async def create_trade(
     
     Workflow:
         1. Place BBO entry order
-        2. Wait for entry fill
-        3. Calculate TP/SL prices from fill price
-        4. Place TP order (LIMIT with reduceOnly=True)
-        5. Place SL order (STOP_MARKET with closePosition=True)
+        2. Wait for entry fill (default: 10s timeout, polling every 0.5s)
+        3. Cancel entry order if not filled within timeout
+        4. Calculate TP/SL prices from fill price
+        5. Place TP order (LIMIT with reduceOnly=True)
+        6. Place SL order (STOP_MARKET with closePosition=True)
     
     Args:
         client: AsterClient instance
@@ -337,8 +338,8 @@ async def create_trade(
         tp_percent: Take profit percentage (e.g., 1.0 for 1%)
         sl_percent: Stop loss percentage (e.g., 0.5 for 0.5%)
         ticks_distance: Distance in ticks for BBO order (default: 1)
-        fill_timeout: Maximum time to wait for entry fill (default: 60s)
-        poll_interval: Order status polling interval (default: 2s)
+        fill_timeout: Maximum time to wait for entry fill (default: 10s)
+        poll_interval: Order status polling interval (default: 0.5s)
         position_side: Position side for hedge mode ("LONG" or "SHORT")
         
     Returns:
@@ -390,7 +391,7 @@ async def create_trade(
         logger.info(f"✅ Entry order placed: {entry_response.order_id}")
         
         # Step 2: Wait for entry fill
-        logger.info(f"⏳ Waiting for entry order to fill...")
+        logger.info(f"⏳ Waiting for entry order to fill (timeout: {fill_timeout}s, polling every {poll_interval}s)...")
         filled_order = await wait_for_order_fill(
             client=client,
             symbol=symbol,
@@ -400,8 +401,22 @@ async def create_trade(
         )
         
         if filled_order is None:
+            # Cancel the entry order on the exchange
+            logger.warning(f"⚠️ Entry order not filled within {fill_timeout}s, cancelling order...")
+            try:
+                cancel_response = await client.cancel_order(
+                    symbol=symbol,
+                    order_id=entry_response.order_id
+                )
+                logger.info(f"✅ Entry order {entry_response.order_id} cancelled successfully")
+                trade.entry_order.status = "CANCELLED"
+            except Exception as cancel_error:
+                logger.error(f"❌ Failed to cancel entry order {entry_response.order_id}: {cancel_error}")
+                trade.entry_order.error = f"Timeout and cancel failed: {cancel_error}"
+            
             trade.status = TradeStatus.CANCELLED
-            trade.entry_order.error = "Entry order not filled within timeout"
+            if not trade.entry_order.error:
+                trade.entry_order.error = f"Entry order not filled within {fill_timeout}s timeout"
             logger.error(f"❌ Entry order not filled, trade cancelled")
             return trade
         
@@ -426,16 +441,23 @@ async def create_trade(
         
         logger.info(f"📈 TP: ${tp_price}, SL: ${sl_price}")
         
-        # Step 4: Place take profit order
+        # Step 4: Place take profit order (TAKE_PROFIT_MARKET with closePosition=true)
+        # For BUY entry (LONG position): SELL order to close with positionSide=LONG
+        # For SELL entry (SHORT position): BUY order to close with positionSide=SHORT
         tp_side = "sell" if side.lower() == "buy" else "buy"
+        
+        # When using closePosition, positionSide must match the position being closed
+        # NOT the order side. For a LONG position, we use SELL with positionSide=LONG
+        tp_position_side = position_side if position_side else ("LONG" if side.lower() == "buy" else "SHORT")
+        
         tp_request = OrderRequest(
             symbol=symbol,
             side=tp_side,
-            order_type="limit",
-            quantity=quantity,
-            price=tp_price,
-            time_in_force="gtc",
-            position_side=position_side,
+            order_type="take_profit_market",
+            quantity=Decimal("0"),  # Required by dataclass but will be ignored by API
+            stop_price=tp_price,  # Take profit trigger price
+            position_side=tp_position_side,  # Position being closed
+            close_position=True,  # Close entire position when TP is hit
         )
         
         try:
@@ -450,16 +472,22 @@ async def create_trade(
             logger.error(f"❌ Failed to place TP order: {e}")
             trade.take_profit_order.error = str(e)
         
-        # Step 5: Place stop loss order
+        # Step 5: Place stop loss order (STOP_MARKET with closePosition=true)
+        # For BUY entry (LONG position): SELL order to close with positionSide=LONG
+        # For SELL entry (SHORT position): BUY order to close with positionSide=SHORT
         sl_side = "sell" if side.lower() == "buy" else "buy"
+        
+        # When using closePosition, positionSide must match the position being closed
+        sl_position_side = position_side if position_side else ("LONG" if side.lower() == "buy" else "SHORT")
+        
         sl_request = OrderRequest(
             symbol=symbol,
             side=sl_side,
             order_type="stop_market",
-            quantity=quantity,
-            price=sl_price,  # Stop price
-            time_in_force="gtc",
-            position_side=position_side,
+            quantity=Decimal("0"),  # Required by dataclass but will be ignored by API
+            stop_price=sl_price,  # Stop loss trigger price
+            position_side=sl_position_side,  # Position being closed
+            close_position=True,  # Close entire position when SL is hit
         )
         
         try:

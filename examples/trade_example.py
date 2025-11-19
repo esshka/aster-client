@@ -47,11 +47,11 @@ async def main():
         # Step 1: Get current market price
         logger.info("\n📊 Fetching market data...")
         ticker = await public_client.get_ticker(symbol)
-        if not ticker or not ticker.markPrice:
+        if not ticker or 'markPrice' not in ticker:
             logger.error(f"Failed to get ticker for {symbol}")
             return
         
-        market_price = Decimal(str(ticker.markPrice))
+        market_price = Decimal(str(ticker['markPrice']))
         logger.info(f"   Current price: ${market_price}")
         
         # Step 2: Get symbol information for tick size
@@ -60,21 +60,34 @@ async def main():
             logger.error(f"Failed to get symbol info for {symbol}")
             return
         
-        tick_size = symbol_info.tick_size
+        # Get tick size from price filter
+        if not symbol_info.price_filter:
+            logger.error(f"No price filter found for {symbol}")
+            return
+        tick_size = symbol_info.price_filter.tick_size
         logger.info(f"   Tick size: {tick_size}")
+        
+        # Get lot size info from lot size filter
+        if not symbol_info.lot_size_filter:
+            logger.error(f"No lot size filter found for {symbol}")
+            return
+        
+        step_size = symbol_info.lot_size_filter.step_size
+        min_order_size = symbol_info.lot_size_filter.min_qty
         
         # Step 3: Calculate order quantity from USDT amount
         quantity = Decimal(str(usdt_amount)) / market_price
         
         # Round to step size
-        steps = int(quantity / symbol_info.step_size)
-        quantity = steps * symbol_info.step_size
+        if step_size > 0:
+            steps = int(quantity / step_size)
+            quantity = steps * step_size
         
         # Ensure minimum order size
-        if quantity < symbol_info.min_order_size:
-            quantity = symbol_info.min_order_size
+        if quantity < min_order_size:
+            quantity = min_order_size
         
-        logger.info(f"   Order quantity: {quantity} (min: {symbol_info.min_order_size})")
+        logger.info(f"   Order quantity: {quantity} (min: {min_order_size})")
         
         # Step 4: Create the trade
         logger.info("\n🎯 Creating trade...")

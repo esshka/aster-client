@@ -17,6 +17,7 @@ import os
 import logging
 from decimal import Decimal
 from typing import Optional, List
+from dotenv import load_dotenv
 
 from .api_methods import APIMethods
 from .bbo import BBOPriceCalculator, create_bbo_order
@@ -32,6 +33,7 @@ from .models import (
 from .monitoring import PerformanceMonitor
 from .session_manager import SessionManager
 
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 

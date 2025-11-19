@@ -200,7 +200,8 @@ class APIMethods:
         if not validate_symbol(order.symbol):
             raise ValueError(f"Invalid symbol: {order.symbol}")
 
-        if not validate_quantity(order.quantity):
+        # Skip quantity validation when closePosition=true (quantity is ignored)
+        if not order.close_position and not validate_quantity(order.quantity):
             raise ValueError(f"Invalid quantity: {order.quantity}")
 
         if order.price is not None and not validate_price(order.price):
@@ -211,8 +212,11 @@ class APIMethods:
             "symbol": order.symbol,
             "side": order.side.upper(),  # API expects uppercase
             "type": order.order_type.upper(),  # API expects uppercase
-            "quantity": str(order.quantity),
         }
+
+        # Add quantity only if not using closePosition
+        if not order.close_position:
+            order_data["quantity"] = str(order.quantity)
 
         if order.price is not None:
             order_data["price"] = str(order.price)
@@ -223,11 +227,26 @@ class APIMethods:
         if order.client_order_id is not None:
             order_data["newClientOrderId"] = order.client_order_id  # camelCase for API
         
-        # Add positionSide - default to BOTH for one-way mode if not specified
+        # Add positionSide
+        # In hedge mode: BUY->LONG, SELL->SHORT
+        # In one-way mode: BOTH is used, but LONG/SHORT also work
         if order.position_side is not None:
             order_data["positionSide"] = order.position_side.upper()
         else:
-            order_data["positionSide"] = "BOTH"  # Default for one-way mode
+            # Default: derive from side (works for both hedge and one-way mode)
+            order_data["positionSide"] = "LONG" if order.side.upper() == "BUY" else "SHORT"
+
+        # Add reduceOnly if specified (for closing positions without margin)
+        if order.reduce_only is not None:
+            order_data["reduceOnly"] = "true" if order.reduce_only else "false"
+
+        # Add stopPrice for STOP_MARKET/TAKE_PROFIT_MARKET orders
+        if order.stop_price is not None:
+            order_data["stopPrice"] = str(order.stop_price)
+
+        # Add closePosition for closing entire position
+        if order.close_position is not None:
+            order_data["closePosition"] = "true" if order.close_position else "false"
 
         response = await self._http_client.request(
             session, "POST", "/fapi/v1/order", data=order_data
