@@ -75,9 +75,16 @@ asyncio.run(trading_example())
 
 ### PublicClient
 - `get_exchange_info()` - Exchange information (returns dict)
-- `get_symbol_info(symbol)` - Information for specific symbol
+- `get_symbol_info(symbol)` - Information for specific symbol (cached)
 - `get_all_mark_prices()` - Current mark prices for all symbols
 - `get_ticker(symbol)` - Ticker data for specific symbol
+- `warmup_cache()` - Preload cache with all symbol information
+
+**Caching & Singleton:**
+The `PublicClient` implements the Singleton pattern to share cached data across the application. Symbol information is automatically cached to improve performance and reduce API calls.
+- **Auto Warmup**: By default, the cache is warmed up when initializing the client.
+- **Singleton**: All instances with the same base URL share the same cache.
+
 
 ### AsterClient
 **Account:**
