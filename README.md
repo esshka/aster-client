@@ -147,6 +147,57 @@ asyncio.run(create_automated_trade())
 6. Places STOP_MARKET order with `closePosition=true`
 7. Returns complete trade object with all order details
 
+### Multi-Account Parallel Trade Execution via ZeroMQ
+
+The ZMQ listener module enables real-time trade execution across multiple accounts simultaneously by listening to ZeroMQ messages containing trade configurations.
+
+```python
+import asyncio
+from aster_client.zmq_listener import ZMQTradeListener
+
+async def main():
+    # Connect to ZMQ publisher
+    listener = ZMQTradeListener(zmq_url="tcp://127.0.0.1:5555")
+    await listener.start()
+
+asyncio.run(main())
+```
+
+**Message Format:**
+```json
+{
+  "symbol": "BTCUSDT",
+  "side": "buy",
+  "market_price": "90000.0",
+  "tick_size": "0.1",
+  "tp_percent": 1.0,
+  "sl_percent": 0.5,
+  "ticks_distance": 1,
+  "accounts": [
+    {
+      "id": "account1",
+      "api_key": "your_api_key",
+      "api_secret": "your_api_secret",
+      "quantity": "0.001",
+      "simulation": false
+    }
+  ]
+}
+```
+
+**How it works:**
+1. Listener subscribes to ZMQ publisher
+2. Receives trade command messages with account details
+3. Creates AccountPool with all specified accounts
+4. Executes `create_trade()` in parallel for each account using `asyncio.gather()`
+5. Logs results for each account (success/failure)
+
+**Use Cases:**
+- Copy trading across multiple accounts
+- Centralized signal distribution
+- Multi-account strategy execution
+- Risk distribution across different accounts
+
 ## Development
 
 ```bash
