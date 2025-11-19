@@ -196,24 +196,62 @@ class APIMethods:
 
         return self._create_order_response(data)
 
-    async def cancel_order(self, session: ClientSession, order_id: str) -> Dict[str, Any]:
+    async def cancel_order(
+        self, 
+        session: ClientSession, 
+        symbol: str,
+        order_id: Optional[int] = None,
+        orig_client_order_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Cancel an existing order."""
-        if not order_id:
-            raise ValueError("Order ID is required")
+        if not symbol:
+            raise ValueError("Symbol is required")
+        if not order_id and not orig_client_order_id:
+            raise ValueError("Either order_id or orig_client_order_id is required")
+
+        params = {"symbol": symbol}
+        if order_id:
+            params["orderId"] = order_id
+        if orig_client_order_id:
+            params["origClientOrderId"] = orig_client_order_id
 
         response = await self._http_client.request(
-            session, "DELETE", "/fapi/v1/order", params={"orderId": order_id}
+            session, "DELETE", "/fapi/v1/order", params=params
         )
         return clean_response_data(response)
 
-    async def get_order(self, session: ClientSession, order_id: str) -> Optional[OrderResponse]:
-        """Get order by ID."""
-        if not order_id:
-            raise ValueError("Order ID is required")
+    async def cancel_all_open_orders(self, session: ClientSession, symbol: str) -> Dict[str, Any]:
+        """Cancel all open orders."""
+        if not symbol:
+            raise ValueError("Symbol is required")
+
+        response = await self._http_client.request(
+            session, "DELETE", "/fapi/v1/allOpenOrders", params={"symbol": symbol}
+        )
+        return clean_response_data(response)
+
+    async def get_order(
+        self, 
+        session: ClientSession, 
+        symbol: str,
+        order_id: Optional[int] = None,
+        orig_client_order_id: Optional[str] = None
+    ) -> Optional[OrderResponse]:
+        """Get order by ID or Client Order ID."""
+        if not symbol:
+            raise ValueError("Symbol is required")
+        if not order_id and not orig_client_order_id:
+            raise ValueError("Either order_id or orig_client_order_id is required")
+
+        params = {"symbol": symbol}
+        if order_id:
+            params["orderId"] = order_id
+        if orig_client_order_id:
+            params["origClientOrderId"] = orig_client_order_id
 
         try:
             response = await self._http_client.request(
-                session, "GET", "/fapi/v1/order", params={"orderId": order_id}
+                session, "GET", "/fapi/v1/order", params=params
             )
             data = clean_response_data(response)
 

@@ -97,16 +97,45 @@ class AsterClient:
             self._api_methods.place_order, "POST", "/orders", order
         )
 
-    async def cancel_order(self, order_id: str) -> dict:
+    async def cancel_order(
+        self,
+        symbol: str,
+        order_id: Optional[int] = None,
+        orig_client_order_id: Optional[str] = None
+    ) -> dict:
         """Cancel an existing order."""
         return await self._execute_with_monitoring(
-            self._api_methods.cancel_order, "DELETE", f"/orders/{order_id}", order_id
+            self._api_methods.cancel_order, 
+            "DELETE", 
+            f"/orders/{symbol}",
+            symbol,
+            order_id,
+            orig_client_order_id
         )
 
-    async def get_order(self, order_id: str) -> Optional[OrderResponse]:
-        """Get order by ID."""
+    async def cancel_all_open_orders(self, symbol: str) -> dict:
+        """Cancel all open orders for a symbol."""
         return await self._execute_with_monitoring(
-            self._api_methods.get_order, "GET", f"/orders/{order_id}", order_id
+            self._api_methods.cancel_all_open_orders,
+            "DELETE",
+            f"/orders/{symbol}/all",
+            symbol
+        )
+
+    async def get_order(
+        self,
+        symbol: str,
+        order_id: Optional[int] = None,
+        orig_client_order_id: Optional[str] = None
+    ) -> Optional[OrderResponse]:
+        """Get order by ID or Client Order ID."""
+        return await self._execute_with_monitoring(
+            self._api_methods.get_order,
+            "GET",
+            f"/orders/{symbol}",
+            symbol,
+            order_id,
+            orig_client_order_id
         )
 
     async def get_orders(self, symbol: Optional[str] = None) -> list[OrderResponse]:
