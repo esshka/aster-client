@@ -166,11 +166,11 @@ class APIMethods:
         if order.price is not None and not validate_price(order.price):
             raise ValueError(f"Invalid price: {order.price}")
 
-        # Prepare order data
+        # Prepare order data - API expects camelCase parameter names
         order_data = {
             "symbol": order.symbol,
-            "side": order.side,
-            "type": order.order_type,
+            "side": order.side.upper(),  # API expects uppercase
+            "type": order.order_type.upper(),  # API expects uppercase
             "quantity": str(order.quantity),
         }
 
@@ -178,13 +178,19 @@ class APIMethods:
             order_data["price"] = str(order.price)
 
         if order.time_in_force is not None:
-            order_data["time_in_force"] = order.time_in_force
+            order_data["timeInForce"] = order.time_in_force.upper()  # camelCase for API
 
         if order.client_order_id is not None:
-            order_data["client_order_id"] = order.client_order_id
+            order_data["newClientOrderId"] = order.client_order_id  # camelCase for API
+        
+        # Add positionSide - default to BOTH for one-way mode if not specified
+        if order.position_side is not None:
+            order_data["positionSide"] = order.position_side.upper()
+        else:
+            order_data["positionSide"] = "BOTH"  # Default for one-way mode
 
         response = await self._http_client.request(
-            session, "POST", "/fapi/v1/orders", data=order_data
+            session, "POST", "/fapi/v1/order", data=order_data
         )
         data = clean_response_data(response)
 
@@ -196,7 +202,7 @@ class APIMethods:
             raise ValueError("Order ID is required")
 
         response = await self._http_client.request(
-            session, "DELETE", f"/fapi/v1/orders/{order_id}"
+            session, "DELETE", "/fapi/v1/order", params={"orderId": order_id}
         )
         return clean_response_data(response)
 
@@ -207,7 +213,7 @@ class APIMethods:
 
         try:
             response = await self._http_client.request(
-                session, "GET", f"/fapi/v1/orders/{order_id}"
+                session, "GET", "/fapi/v1/order", params={"orderId": order_id}
             )
             data = clean_response_data(response)
 

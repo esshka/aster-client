@@ -27,6 +27,9 @@ Environment Variables:
 
 import asyncio
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 import logging
 from decimal import Decimal
 
@@ -47,12 +50,15 @@ async def main():
 
     # Configuration
     SYMBOL = "BTCUSDT"
-    PRICE = Decimal("80000.00")  # Limit price: $80,000
-    QUANTITY = Decimal("0.001")   # Quantity: 0.001 BTC
+    PRICE = Decimal("50000.00")  # Limit price: $50,000 (below market, won't fill immediately)
+    QUANTITY = Decimal("0.001")   # Quantity: 0.001 BTC (minimum precision for most pairs)
+    # NOTE: This is a REAL order! It will be placed on the exchange.
+    # The low limit price ($50k) means it likely won't fill at current BTC prices (~$100k+)
+    # Adjust QUANTITY based on your account's buying power if needed
 
     # Safety settings
-    SIMULATION_MODE = True  # Set to False for live trading
-    USE_ENV_VARS = True     # Use environment variables for credentials
+    SIMULATION_MODE = False  # Set to False for live trading (required for authentication)
+    USE_ENV_VARS = True      # Use environment variables for credentials
 
     try:
         # Method 1: Create client using env variables
@@ -104,7 +110,8 @@ async def main():
                 quantity=QUANTITY,
                 price=PRICE,
                 time_in_force="gtc",  # Good Till Cancelled
-                client_order_id=f"btc_buy_example_{SYMBOL.lower()}"
+                client_order_id=f"btc_buy_example_{SYMBOL.lower()}",
+                position_side="LONG"  # Required for Hedge Mode accounts
             )
 
             # Step 4: Place the order
@@ -161,8 +168,20 @@ async def main():
         logger.error("Please check your API credentials and environment variables")
 
     except Exception as e:
-        logger.error(f"Unexpected error: {type(e).__name__}: {e}")
-        raise
+        error_msg = str(e)
+        
+        # Check for specific error codes
+        if "-2019" in error_msg and "Margin is insufficient" in error_msg:
+            logger.error(f"❌ Insufficient margin to place order")
+            logger.error(f"   Your buying power: Check the output above")
+            logger.error(f"   Required margin: ~${PRICE * QUANTITY} (price × quantity)")
+            logger.error(f"   💡 Solution: Either reduce QUANTITY, or add more funds to your account")
+        elif "-4061" in error_msg:
+            logger.error(f"❌ Position side mismatch error: {error_msg}")
+            logger.error(f"   Your account may be in Hedge Mode. Make sure position_side is set correctly.")
+        else:
+            logger.error(f"Unexpected error: {type(e).__name__}: {e}")
+            raise
 
 
 def print_environment_setup():

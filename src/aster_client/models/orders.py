@@ -26,6 +26,7 @@ class OrderRequest:
     price: Optional[Decimal] = None
     time_in_force: Optional[str] = None
     client_order_id: Optional[str] = None
+    position_side: Optional[str] = None  # "BOTH", "LONG", or "SHORT" for hedge mode
 
 
 @dataclass(frozen=True)
