@@ -1,18 +1,54 @@
 """
-Aster Perpetual Trading Client Library
+Aster Client - Python client for Aster DEX API.
 
-A production-ready Python client for interacting with the Aster perpetual trading platform API.
-Enhanced with session management, retry logic, and complete API coverage.
+This package provides a simple and efficient client for interacting with
+the Aster DEX futures trading API.
 """
 
-from .account_client import AsterClient
-from .public_client import AsterPublicClient as PublicClient
-from .auth import ApiCredentials, AsterSigner
+from .account_client import AsterClient, create_aster_client
+from .account_pool import AccountPool, AccountConfig, AccountResult
+from .public_client import AsterPublicClient
+from .models import (
+    # Configuration
+    ConnectionConfig,
+    RetryConfig,
+    # Orders
+    OrderRequest,
+    OrderResponse,
+    PositionMode,
+    # Account
+    AccountInfo,
+    Position,
+    Balance,
+)
+from .trades import (
+    Trade,
+    TradeOrder,
+    TradeStatus,
+    create_trade,
+    calculate_tp_sl_prices,
+    wait_for_order_fill,
+)
 
-__version__ = "2.0.0"
 __all__ = [
     "AsterClient",
-    "PublicClient",
-    "ApiCredentials",
-    "AsterSigner",
+    "create_aster_client",
+    "AccountPool",
+    "AccountConfig",
+    "AccountResult",
+    "AsterPublicClient",
+    "ConnectionConfig",
+    "RetryConfig",
+    "OrderRequest",
+    "OrderResponse",
+    "PositionMode",
+    "AccountInfo",
+    "Position",
+    "Balance",
+    "Trade",
+    "TradeOrder",
+    "TradeStatus",
+    "create_trade",
+    "calculate_tp_sl_prices",
+    "wait_for_order_fill",
 ]
