@@ -158,7 +158,19 @@ def sample_symbol_info() -> SymbolInfo:
 @pytest.fixture
 def public_client():
     """Create a fresh AsterPublicClient instance for testing."""
-    return AsterPublicClient(base_url="https://test-api.example.com")
+    # Clear singleton instances to ensure test isolation
+    AsterPublicClient._instances.clear()
+    
+    client = AsterPublicClient(base_url="https://test-api.example.com", auto_warmup=False)
+    
+    # Reset initialization flag for clean state
+    client._initialized = False
+    client.__init__(base_url="https://test-api.example.com", auto_warmup=False)
+    
+    yield client
+    
+    # Cleanup: Clear singleton instances after test
+    AsterPublicClient._instances.clear()
 
 
 @pytest.fixture

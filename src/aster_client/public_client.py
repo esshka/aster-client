@@ -33,20 +33,64 @@ class AsterPublicClient:
     """
     A lightweight client for accessing public market data from Aster exchange
     without requiring authentication.
+    
+    This class implements the Singleton pattern - only one instance exists per base_url.
+    This ensures the symbol info cache is shared across all uses of the client.
     """
+    
+    _instances: Dict[str, 'AsterPublicClient'] = {}
+
+    def __new__(cls, base_url: str = "https://fapi.asterdex.com", auto_warmup: bool = True):
+        """
+        Create or return existing singleton instance for the given base_url.
+        
+        Args:
+            base_url: Base URL for the API
+            auto_warmup: If True, automatically warmup cache when using context manager
+            
+        Returns:
+            Singleton instance for the given base_url
+        """
+        # Validate URL early to match expected behavior
+        if not isinstance(base_url, str):
+            raise ValueError("Base URL must be a valid HTTP/HTTPS URL")
+        
+        if not validate_url(base_url):
+            raise ValueError("Base URL must be a valid HTTP/HTTPS URL")
+        
+        # Normalize URL for consistent lookup
+        normalized_url = base_url.rstrip("/")
+
+        
+        if normalized_url not in cls._instances:
+            instance = super().__new__(cls)
+            cls._instances[normalized_url] = instance
+            # Mark that this instance needs initialization
+            instance._initialized = False
+        
+        return cls._instances[normalized_url]
 
     def __init__(self, base_url: str = "https://fapi.asterdex.com", auto_warmup: bool = True):
         """
         Initialize the public Aster client.
+        
+        Note: Due to singleton pattern, __init__ may be called multiple times
+        on the same instance. Initialization only happens once.
 
         Args:
             base_url: Base URL for the API
             auto_warmup: If True, automatically warmup cache when using context manager
         """
+        # Only initialize once per instance
+        if getattr(self, '_initialized', False):
+            logger.debug(f"Returning existing AsterPublicClient instance for {base_url}")
+            return
+        
         if not validate_url(base_url):
             raise ValueError("Base URL must be a valid HTTP/HTTPS URL")
 
         self.base_url = base_url.rstrip("/")
+
 
         # API endpoint paths for public data
         self.endpoints = {
@@ -65,6 +109,9 @@ class AsterPublicClient:
         self._auto_warmup = auto_warmup
 
         logger.info("AsterPublicClient initialized for public market data access")
+        
+        # Mark as initialized to prevent re-initialization
+        self._initialized = True
 
     async def _get_session(self) -> ClientSession:
         """Get or create aiohttp session."""
