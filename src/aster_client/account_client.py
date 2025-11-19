@@ -15,9 +15,11 @@ The client follows state-first design with clean separation of concerns:
 import asyncio
 import os
 import logging
-from typing import Optional
+from decimal import Decimal
+from typing import Optional, List
 
 from .api_methods import APIMethods
+from .bbo import BBOPriceCalculator, create_bbo_order
 from .constants import (
     DEFAULT_BASE_URL, DEFAULT_TIMEOUT, DEFAULT_RETRY_DELAY,
     DEFAULT_MAX_RETRIES, SUCCESS_STATUS_CODE, ERROR_STATUS_CODE
@@ -52,6 +54,7 @@ class AsterClient:
         self._http_client = HttpClient(config, retry_config)
         self._api_methods = APIMethods(self._http_client)
         self._monitor = PerformanceMonitor()
+        self._bbo_calculator = BBOPriceCalculator()
         self._closed = False
 
     @classmethod
@@ -109,6 +112,62 @@ class AsterClient:
         return await self._execute_with_monitoring(
             self._api_methods.place_order, "POST", "/orders", order
         )
+
+    async def place_bbo_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: Decimal,
+        market_price: Decimal,
+        tick_size: Decimal,
+        ticks_distance: int = 1,
+        time_in_force: str = "gtc",
+        client_order_id: Optional[str] = None,
+        position_side: Optional[str] = None,
+    ) -> OrderResponse:
+        """
+        Place a BBO (Best Bid Offer) order with automatic price calculation.
+
+        BBO orders are placed N ticks away from market price:
+        - BUY orders: market_price + (tick_size * ticks_distance)
+        - SELL orders: market_price - (tick_size * ticks_distance)
+
+        Args:
+            symbol: Trading symbol (e.g., "BTCUSDT")
+            side: Order side ("buy" or "sell")
+            quantity: Order quantity
+            market_price: Current market price
+            tick_size: Tick size for the symbol
+            ticks_distance: Number of ticks away from market price (default: 1)
+            time_in_force: Time in force (default: "gtc")
+            client_order_id: Optional client order ID
+            position_side: Optional position side for hedge mode
+
+        Returns:
+            OrderResponse with order details
+
+        Raises:
+            ValueError: If parameters are invalid
+        """
+        # Calculate BBO price
+        bbo_price = self._bbo_calculator.calculate_bbo_price(
+            symbol, side, market_price, tick_size, ticks_distance
+        )
+
+        # Create order request with BBO price
+        order = OrderRequest(
+            symbol=symbol,
+            side=side.lower(),
+            order_type="limit",
+            quantity=quantity,
+            price=bbo_price,
+            time_in_force=time_in_force,
+            client_order_id=client_order_id,
+            position_side=position_side,
+        )
+
+        # Place the order
+        return await self.place_order(order)
 
     async def cancel_order(
         self,
