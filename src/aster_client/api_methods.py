@@ -268,3 +268,30 @@ class APIMethods:
         except KeyError as e:
             logger.error(f"Missing required field in mark price data: {e}")
             return None
+
+    async def change_position_mode(self, session: ClientSession, dual_side_position: bool) -> Dict[str, Any]:
+        """
+        Change user's position mode (Hedge Mode or One-way Mode) on every symbol.
+        
+        Args:
+            dual_side_position: "true": Hedge Mode; "false": One-way Mode
+        """
+        response = await self._http_client.request(
+            session, 
+            "POST", 
+            "/fapi/v1/positionSide/dual", 
+            data={"dualSidePosition": "true" if dual_side_position else "false"}
+        )
+        return clean_response_data(response)
+
+    async def get_position_mode(self, session: ClientSession) -> Dict[str, Any]:
+        """
+        Get user's position mode (Hedge Mode or One-way Mode) on every symbol.
+        
+        Returns:
+            Dict containing "dualSidePosition": boolean
+        """
+        response = await self._http_client.request(
+            session, "GET", "/fapi/v1/positionSide/dual"
+        )
+        return clean_response_data(response)

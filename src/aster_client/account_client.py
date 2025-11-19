@@ -121,6 +121,31 @@ class AsterClient:
             self._api_methods.get_mark_price, "GET", f"/market/{symbol}/mark_price", symbol
         )
 
+    async def change_position_mode(self, dual_side_position: bool) -> dict:
+        """
+        Change user's position mode (Hedge Mode or One-way Mode) on every symbol.
+        
+        Args:
+            dual_side_position: True for Hedge Mode, False for One-way Mode
+        """
+        return await self._execute_with_monitoring(
+            self._api_methods.change_position_mode, 
+            "POST", 
+            "/positionSide/dual", 
+            dual_side_position
+        )
+
+    async def get_position_mode(self) -> dict:
+        """
+        Get user's position mode (Hedge Mode or One-way Mode) on every symbol.
+        
+        Returns:
+            Dict containing "dualSidePosition": boolean
+        """
+        return await self._execute_with_monitoring(
+            self._api_methods.get_position_mode, "GET", "/positionSide/dual"
+        )
+
     # Monitoring and health
     async def health_check(self) -> bool:
         """Check client health."""
