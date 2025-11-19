@@ -29,8 +29,10 @@ from .trades import (
     calculate_tp_sl_prices,
     wait_for_order_fill,
 )
+from .zmq_listener import ZMQTradeListener
 
 __all__ = [
+    # Main Clients
     "AsterClient",
     "create_aster_client",
     "AccountPool",
@@ -51,4 +53,5 @@ __all__ = [
     "create_trade",
     "calculate_tp_sl_prices",
     "wait_for_order_fill",
+    "ZMQTradeListener",
 ]
