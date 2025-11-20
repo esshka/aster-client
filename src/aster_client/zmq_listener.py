@@ -4,6 +4,10 @@ ZMQ Trade Listener - Listens for trade commands via ZeroMQ and executes them in 
 This module provides the ZMQTradeListener class which subscribes to a ZeroMQ topic,
 receives trade configuration messages, and executes trades across multiple accounts
 using the AccountPool and trades modules.
+
+Supported message types:
+- heartbeat: Connection verification messages from the publisher
+- trade: Trade execution commands with account details
 """
 
 import asyncio
@@ -52,6 +56,10 @@ class ZMQTradeListener:
         self.log_dir = log_dir
         self.file_handler = None
         
+        # Initialize public client for market data (shared instance via singleton)
+        # auto_warmup=False because we'll manually control warmup timing in start()
+        self.public_client = AsterPublicClient(auto_warmup=False)
+        
         # Set up session-specific log file
         self._setup_session_logging()
         
@@ -61,6 +69,14 @@ class ZMQTradeListener:
         self.socket.connect(self.zmq_url)
         self.socket.subscribe(self.topic)
         self.running = True
+        
+        # Warmup symbol cache before processing any messages
+        logger.info("Warming up symbol cache...")
+        try:
+            cached_count = await self.public_client.warmup_cache()
+            logger.info(f"Symbol cache warmed up with {cached_count} symbols")
+        except Exception as e:
+            logger.warning(f"Failed to warmup symbol cache: {e}. Will fetch symbols on-demand.")
         
         logger.info(f"Listening for messages on topic '{self.topic}'...")
         
@@ -107,6 +123,10 @@ class ZMQTradeListener:
         self.running = False
         self.socket.close()
         self.ctx.term()
+        
+        # Close public client session
+        await self.public_client.close()
+        
         logger.info("ZMQ listener stopped")
         
         # Clean up file handler
@@ -170,6 +190,19 @@ class ZMQTradeListener:
         Args:
             message: The decoded message
         """
+        # Check if this is a heartbeat message
+        msg_type = message.get("type", "trade")
+        
+        if msg_type == "heartbeat":
+            # Log heartbeat message details
+            logger.info(
+                f"Heartbeat received - Status: {message.get('status', 'N/A')}, "
+                f"Timestamp: {message.get('timestamp', 'N/A')}, "
+                f"Message: {message.get('message', 'N/A')}, "
+                f"Accounts Loaded: {message.get('accounts_loaded', 'N/A')}"
+            )
+            return
+        
         # Create sanitized copy for logging
         sanitized = message.copy()
         
@@ -209,6 +242,15 @@ class ZMQTradeListener:
             message: Decoded JSON message containing trade details and accounts
         """
         try:
+            # Check if this is a heartbeat message
+            msg_type = message.get("type", "trade")
+            
+            if msg_type == "heartbeat":
+                # Heartbeat messages are already logged in _log_message_received
+                # No further processing needed
+                logger.debug("Heartbeat message processed successfully")
+                return
+            
             # Extract common trade parameters
             symbol = message["symbol"]
             side = message["side"]
@@ -223,24 +265,24 @@ class ZMQTradeListener:
             
             # Fetch market price and tick size from exchange
             logger.info(f"Fetching market data for {symbol}...")
-            async with AsterPublicClient() as public_client:
-                # Get current market price from ticker
-                ticker = await public_client.get_ticker(symbol)
-                if not ticker or "markPrice" not in ticker:
-                    logger.error(f"Failed to fetch market price for {symbol}")
-                    return
-                
-                market_price = Decimal(str(ticker["markPrice"]))
-                logger.info(f"Market price fetched: {market_price}")
-                
-                # Get tick size from symbol info
-                symbol_info = await public_client.get_symbol_info(symbol)
-                if not symbol_info or not symbol_info.price_filter:
-                    logger.error(f"Failed to fetch symbol info for {symbol}")
-                    return
-                
-                tick_size = symbol_info.price_filter.tick_size
-                logger.info(f"Tick size fetched: {tick_size}")
+            
+            # Get current market price from ticker
+            ticker = await self.public_client.get_ticker(symbol)
+            if not ticker or "markPrice" not in ticker:
+                logger.error(f"Failed to fetch market price for {symbol}")
+                return
+            
+            market_price = Decimal(str(ticker["markPrice"]))
+            logger.info(f"Market price fetched: {market_price}")
+            
+            # Get tick size from symbol info (should be cached from warmup)
+            symbol_info = await self.public_client.get_symbol_info(symbol)
+            if not symbol_info or not symbol_info.price_filter:
+                logger.error(f"Failed to fetch symbol info for {symbol}")
+                return
+            
+            tick_size = symbol_info.price_filter.tick_size
+            logger.info(f"Tick size fetched: {tick_size}")
             
             logger.info(
                 f"Starting trade execution - Symbol: {symbol}, Side: {side}, "

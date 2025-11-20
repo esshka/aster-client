@@ -60,6 +60,12 @@ class TestZMQTradeListener:
         """Test that process_message correctly extracts trade parameters."""
         listener = ZMQTradeListener(zmq_url="tcp://127.0.0.1:5555")
         
+        # Mock public_client methods
+        listener.public_client.get_ticker = AsyncMock(return_value={"markPrice": "90000.0"})
+        listener.public_client.get_symbol_info = AsyncMock(return_value=MagicMock(
+            price_filter=MagicMock(tick_size="0.1")
+        ))
+        
         # Mock AccountPool and create_trade
         with patch('aster_client.zmq_listener.AccountPool') as mock_pool_class, \
              patch('aster_client.zmq_listener.create_trade') as mock_create_trade:
@@ -143,6 +149,12 @@ class TestZMQTradeListener:
                 status=TradeStatus.ACTIVE
             )
         
+        # Mock public_client methods
+        listener.public_client.get_ticker = AsyncMock(return_value={"markPrice": "90000.0"})
+        listener.public_client.get_symbol_info = AsyncMock(return_value=MagicMock(
+            price_filter=MagicMock(tick_size="0.1")
+        ))
+        
         with patch('aster_client.zmq_listener.AccountPool') as mock_pool_class, \
              patch('aster_client.zmq_listener.create_trade', side_effect=mock_create_trade):
             
@@ -159,6 +171,12 @@ class TestZMQTradeListener:
     async def test_process_message_handles_trade_failures(self, sample_trade_message):
         """Test that process_message handles individual trade failures."""
         listener = ZMQTradeListener(zmq_url="tcp://127.0.0.1:5555")
+        
+        # Mock public_client methods
+        listener.public_client.get_ticker = AsyncMock(return_value={"markPrice": "90000.0"})
+        listener.public_client.get_symbol_info = AsyncMock(return_value=MagicMock(
+            price_filter=MagicMock(tick_size="0.1")
+        ))
         
         call_count = [0]
         
@@ -205,6 +223,12 @@ class TestZMQTradeListener:
     async def test_process_message_uses_correct_quantities(self, sample_trade_message):
         """Test that each account gets its specified quantity."""
         listener = ZMQTradeListener(zmq_url="tcp://127.0.0.1:5555")
+        
+        # Mock public_client methods
+        listener.public_client.get_ticker = AsyncMock(return_value={"markPrice": "90000.0"})
+        listener.public_client.get_symbol_info = AsyncMock(return_value=MagicMock(
+            price_filter=MagicMock(tick_size="0.1")
+        ))
         
         captured_quantities = []
         
