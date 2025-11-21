@@ -103,12 +103,17 @@ class BBOPriceCalculator:
             
             try:
                 async with aiohttp.ClientSession() as session:
+                    # Test combined stream with query params (standard Binance format)
+                    # Base URL changes from /ws to /stream
+                    base_url = self.ws_url.replace("/ws/!bookTicker", "/stream")
+                    combined_stream_url = f"{base_url}?streams=btcusdt@bookTicker/ethusdt@bookTicker/solusdt@bookTicker"
+                    
                     async with session.ws_connect(
-                        self.ws_url,
-                        heartbeat=60,  # Send client pings every 60 seconds
-                        timeout=aiohttp.ClientTimeout(total=None, connect=10, sock_read=900),  # 15min read timeout (matches server ping interval)
+                        combined_stream_url,
+                        heartbeat=60,
+                        timeout=aiohttp.ClientTimeout(total=None, connect=10, sock_read=900),
                     ) as ws:
-                        self.logger.info("Connected to BBO WebSocket stream")
+                        self.logger.info(f"Connected to BBO WebSocket stream: {combined_stream_url}")
                         
                         async for msg in ws:
                             # Check if we've been connected for 24 hours (enforce exchange limit)
@@ -126,7 +131,12 @@ class BBOPriceCalculator:
                             if msg.type == aiohttp.WSMsgType.TEXT:
                                 try:
                                     data = json.loads(msg.data)
-                                    self._process_bbo_update(data)
+                                    
+                                    # Handle combined stream format: {"stream": "...", "data": {...}}
+                                    if "data" in data and "stream" in data:
+                                        self._process_bbo_update(data["data"])
+                                    else:
+                                        self._process_bbo_update(data)
                                 except Exception as e:
                                     self.logger.error(f"Error processing BBO message: {e}")
                             elif msg.type == aiohttp.WSMsgType.PING:
