@@ -105,8 +105,8 @@ class BBOPriceCalculator:
                 async with aiohttp.ClientSession() as session:
                     async with session.ws_connect(
                         self.ws_url,
-                        heartbeat=30,  # Send pings every 30 seconds (server sends every 5 min)
-                        autoping=True,  # Automatically respond to server pings
+                        heartbeat=60,  # Send client pings every 60 seconds
+                        timeout=aiohttp.ClientTimeout(total=None, connect=10, sock_read=900),  # 15min read timeout (matches server ping interval)
                     ) as ws:
                         self.logger.info("Connected to BBO WebSocket stream")
                         
@@ -146,10 +146,19 @@ class BBOPriceCalculator:
                                 reconnect_needed = True
                                 break
                         
-                        # If we exit the loop normally (not an error), check if WebSocket is still open
-                        if not ws.closed and self.running:
-                            self.logger.warning("WebSocket loop exited unexpectedly")
-                            reconnect_needed = True
+                        # If we exit the async for loop, the connection was closed
+                        # Check why it closed
+                        if self.running:
+                            if ws.closed:
+                                self.logger.warning(
+                                    f"WebSocket connection closed (code: {ws.close_code})"
+                                )
+                                reconnect_needed = True
+                            elif not reconnect_needed:
+                                # Loop exited but ws not closed and no reconnect flag set
+                                # This shouldn't happen
+                                self.logger.warning("WebSocket loop exited unexpectedly")
+                                reconnect_needed = True
                             
             except Exception as e:
                 self.logger.error(f"WebSocket connection error: {e}")
