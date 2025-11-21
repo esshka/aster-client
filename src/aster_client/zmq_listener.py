@@ -24,6 +24,7 @@ import zmq.asyncio
 from .account_pool import AccountPool, AccountConfig
 from .public_client import AsterPublicClient
 from .trades import create_trade
+from .bbo import BBOPriceCalculator
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,9 @@ class ZMQTradeListener:
         # auto_warmup=False because we'll manually control warmup timing in start()
         self.public_client = AsterPublicClient(auto_warmup=False)
         
+        # Initialize BBO calculator (singleton)
+        self.bbo_calculator = BBOPriceCalculator()
+        
         # Set up session-specific log file
         self._setup_session_logging()
         
@@ -69,6 +73,9 @@ class ZMQTradeListener:
         self.socket.connect(self.zmq_url)
         self.socket.subscribe(self.topic)
         self.running = True
+        
+        # Start BBO WebSocket client
+        await self.bbo_calculator.start()
         
         # Warmup symbol cache before processing any messages
         logger.info("Warming up symbol cache...")
@@ -123,6 +130,9 @@ class ZMQTradeListener:
         self.running = False
         self.socket.close()
         self.ctx.term()
+        
+        # Stop BBO WebSocket client
+        await self.bbo_calculator.stop()
         
         # Close public client session
         await self.public_client.close()
@@ -263,26 +273,30 @@ class ZMQTradeListener:
                 logger.warning("No accounts provided in message")
                 return
             
-            # Fetch market data from exchange
+            # Fetch market data
             logger.info(f"Fetching market data for {symbol}...")
             
-            # Get order book for best bid/ask
-            # We use a small limit (5) to minimize data transfer while getting top of book
-            order_book = await self.public_client.get_order_book(symbol, limit=5)
-            if not order_book or "bids" not in order_book or "asks" not in order_book:
-                logger.error(f"Failed to fetch order book for {symbol}")
-                return
+            # Try to get BBO from WebSocket cache first
+            bbo = self.bbo_calculator.get_bbo(symbol)
             
-            # Extract best bid and ask
-            # Bids are sorted desc, Asks are sorted asc
-            # Format: [["price", "qty"], ...]
-            try:
-                best_bid = Decimal(order_book["bids"][0][0])
-                best_ask = Decimal(order_book["asks"][0][0])
-                logger.info(f"Market data fetched: Bid=${best_bid}, Ask=${best_ask}")
-            except (IndexError, ValueError) as e:
-                logger.error(f"Failed to parse order book for {symbol}: {e}")
-                return
+            if bbo:
+                best_bid, best_ask = bbo
+                logger.info(f"Using real-time BBO for {symbol}: Bid=${best_bid}, Ask=${best_ask}")
+            else:
+                # Fallback to REST API if not in cache (e.g. startup)
+                logger.warning(f"BBO not in cache for {symbol}, falling back to REST API")
+                order_book = await self.public_client.get_order_book(symbol, limit=5)
+                if not order_book or "bids" not in order_book or "asks" not in order_book:
+                    logger.error(f"Failed to fetch order book for {symbol}")
+                    return
+                
+                try:
+                    best_bid = Decimal(order_book["bids"][0][0])
+                    best_ask = Decimal(order_book["asks"][0][0])
+                    logger.info(f"Market data fetched via REST: Bid=${best_bid}, Ask=${best_ask}")
+                except (IndexError, ValueError) as e:
+                    logger.error(f"Failed to parse order book for {symbol}: {e}")
+                    return
             
             # Get tick size from symbol info (should be cached from warmup)
             symbol_info = await self.public_client.get_symbol_info(symbol)

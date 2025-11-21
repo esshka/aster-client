@@ -13,12 +13,19 @@ Key Features:
 - SELL orders: market price - 1 tick size
 - Price precision handling
 - Integration with existing order management system
+- Real-time BBO price updates via WebSocket
 """
 
+import asyncio
+import json
 import logging
+import time
 from decimal import Decimal, ROUND_DOWN
-from typing import Optional
+from typing import Optional, Dict, Tuple
 
+import aiohttp
+
+from .constants import DEFAULT_WS_URL
 from .models.market import SymbolInfo
 from .models.orders import OrderRequest
 
@@ -28,16 +35,125 @@ logger = logging.getLogger(__name__)
 class BBOPriceCalculator:
     """
     BBO price calculator for determining optimal order placement prices.
+    
+    This class implements the Singleton pattern to maintain a single WebSocket
+    connection for real-time BBO updates.
 
     For BBO logic:
     - Buy orders: Place at current market price + 1 tick size
     - Sell orders: Place at current market price - 1 tick size
     """
+    
+    _instance = None
+    _initialized = False
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(BBOPriceCalculator, cls).__new__(cls)
+        return cls._instance
 
     def __init__(self):
         """Initialize BBO price calculator."""
+        if self._initialized:
+            return
+            
         self.logger = logger
-        self.logger.debug("BBO calculator initialized")
+        self.ws_url = DEFAULT_WS_URL
+        self.running = False
+        self.ws_task = None
+        self.bbo_cache: Dict[str, Tuple[Decimal, Decimal]] = {}  # symbol -> (best_bid, best_ask)
+        self.last_update: Dict[str, float] = {}  # symbol -> timestamp
+        
+        self.logger.debug("BBO calculator initialized (Singleton)")
+        self._initialized = True
+
+    async def start(self):
+        """Start the WebSocket client for real-time BBO updates."""
+        if self.running:
+            return
+
+        self.running = True
+        self.ws_task = asyncio.create_task(self._ws_loop())
+        self.logger.info(f"BBO WebSocket client started: {self.ws_url}")
+
+    async def stop(self):
+        """Stop the WebSocket client."""
+        self.running = False
+        if self.ws_task:
+            self.ws_task.cancel()
+            try:
+                await self.ws_task
+            except asyncio.CancelledError:
+                pass
+            self.ws_task = None
+        self.logger.info("BBO WebSocket client stopped")
+
+    async def _ws_loop(self):
+        """Main WebSocket loop for receiving BBO updates."""
+        while self.running:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.ws_connect(self.ws_url) as ws:
+                        self.logger.info("Connected to BBO WebSocket stream")
+                        
+                        async for msg in ws:
+                            if not self.running:
+                                break
+                                
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                try:
+                                    data = json.loads(msg.data)
+                                    self._process_bbo_update(data)
+                                except Exception as e:
+                                    self.logger.error(f"Error processing BBO message: {e}")
+                            elif msg.type == aiohttp.WSMsgType.ERROR:
+                                self.logger.error(f"WebSocket connection closed with error: {ws.exception()}")
+                                break
+            except Exception as e:
+                self.logger.error(f"WebSocket connection error: {e}")
+                if self.running:
+                    await asyncio.sleep(5)  # Reconnect delay
+
+    def _process_bbo_update(self, data: Dict):
+        """
+        Process BBO update message.
+        
+        Expected format:
+        {
+          "u":400900217,     // order book updateId
+          "s":"BNBUSDT",     // symbol
+          "b":"25.35190000", // best bid price
+          "B":"31.21000000", // best bid qty
+          "a":"25.36520000", // best ask price
+          "A":"40.66000000"  // best ask qty
+        }
+        """
+        try:
+            symbol = data.get("s")
+            if not symbol:
+                return
+
+            best_bid = Decimal(str(data.get("b", 0)))
+            best_ask = Decimal(str(data.get("a", 0)))
+
+            if best_bid > 0 and best_ask > 0:
+                self.bbo_cache[symbol] = (best_bid, best_ask)
+                self.last_update[symbol] = time.time()
+                # self.logger.debug(f"Updated BBO for {symbol}: Bid={best_bid}, Ask={best_ask}")
+        except Exception as e:
+            self.logger.error(f"Failed to parse BBO update: {e}")
+
+    def get_bbo(self, symbol: str) -> Optional[Tuple[Decimal, Decimal]]:
+        """
+        Get the latest BBO prices for a symbol from cache.
+        
+        Args:
+            symbol: Trading symbol
+            
+        Returns:
+            Tuple of (best_bid, best_ask) or None if not available
+        """
+        return self.bbo_cache.get(symbol)
 
     def get_tick_size_from_symbol_info(self, symbol_info: SymbolInfo) -> Decimal:
         """
@@ -76,19 +192,21 @@ class BBOPriceCalculator:
         self,
         symbol: str,
         side: str,
-        best_bid: Decimal,
-        best_ask: Decimal,
-        tick_size: Decimal,
+        best_bid: Optional[Decimal] = None,
+        best_ask: Optional[Decimal] = None,
+        tick_size: Decimal = Decimal("0.01"), # Default if not provided, though usually required
         ticks_distance: int = 1,
     ) -> Decimal:
         """
         Calculate BBO price for optimal order placement.
+        
+        If best_bid/best_ask are not provided, tries to use cached values.
 
         Args:
             symbol: Trading symbol
             side: Order side ("buy" or "sell")
-            best_bid: Current best bid price
-            best_ask: Current best ask price
+            best_bid: Current best bid price (optional)
+            best_ask: Current best ask price (optional)
             tick_size: Tick size for the symbol
             ticks_distance: Number of ticks away from best price (default: 1)
 
@@ -96,10 +214,21 @@ class BBOPriceCalculator:
             Calculated BBO price
 
         Raises:
-            ValueError: If parameters are invalid
+            ValueError: If parameters are invalid or prices unavailable
         """
         if not symbol or not symbol.strip():
             raise ValueError("Symbol cannot be empty")
+
+        # Try to get from cache if not provided
+        if best_bid is None or best_ask is None:
+            cached_bbo = self.get_bbo(symbol)
+            if cached_bbo:
+                best_bid = best_bid or cached_bbo[0]
+                best_ask = best_ask or cached_bbo[1]
+            else:
+                if best_bid is None or best_ask is None:
+                     # If still missing, we can't calculate
+                     raise ValueError(f"BBO prices not available for {symbol} and not provided")
 
         side_lower = side.lower()
         if side_lower not in ["buy", "sell"]:
@@ -118,25 +247,19 @@ class BBOPriceCalculator:
         price_adjustment = tick_size * ticks_distance
         
         if side_lower == "buy":
-            # For buy orders: place N ticks above best bid (improve bid)
-            # Note: If ticks_distance is large, this might cross the spread (best_ask)
-            bbo_price = best_bid + price_adjustment
+            # For buy orders (LONG): place N ticks below best bid to stay on maker side
+            # This ensures we don't cross the spread and get maker fees
+            bbo_price = best_bid - price_adjustment
             
-            # Warning if crossing spread
-            if bbo_price >= best_ask:
+            # Warning if price goes below 0 or too far from market
+            if bbo_price <= 0:
                 self.logger.warning(
-                    f"BBO Buy Price {bbo_price} crosses spread (Best Ask: {best_ask})"
+                    f"BBO Buy Price {bbo_price} is invalid (below 0)"
                 )
         else:  # sell
-            # For sell orders: place N ticks below best ask (improve ask)
-            # Note: If ticks_distance is large, this might cross the spread (best_bid)
-            bbo_price = best_ask - price_adjustment
-            
-            # Warning if crossing spread
-            if bbo_price <= best_bid:
-                self.logger.warning(
-                    f"BBO Sell Price {bbo_price} crosses spread (Best Bid: {best_bid})"
-                )
+            # For sell orders (SHORT): place N ticks above best ask to stay on maker side
+            # This ensures we don't cross the spread and get maker fees
+            bbo_price = best_ask + price_adjustment
 
         # Round to appropriate precision based on tick size
         precision = self._get_price_precision(tick_size)
@@ -226,9 +349,9 @@ _default_calculator = BBOPriceCalculator()
 def calculate_bbo_price(
     symbol: str,
     side: str,
-    best_bid: Decimal,
-    best_ask: Decimal,
-    tick_size: Decimal,
+    best_bid: Optional[Decimal] = None,
+    best_ask: Optional[Decimal] = None,
+    tick_size: Decimal = Decimal("0.01"),
     ticks_distance: int = 1,
 ) -> Decimal:
     """
@@ -237,8 +360,8 @@ def calculate_bbo_price(
     Args:
         symbol: Trading symbol
         side: Order side ("buy" or "sell")
-        best_bid: Current best bid price
-        best_ask: Current best ask price
+        best_bid: Current best bid price (optional)
+        best_ask: Current best ask price (optional)
         tick_size: Tick size for the symbol
         ticks_distance: Number of ticks away from best price (default: 1)
 
@@ -254,9 +377,9 @@ def create_bbo_order(
     symbol: str,
     side: str,
     quantity: Decimal,
-    best_bid: Decimal,
-    best_ask: Decimal,
-    tick_size: Decimal,
+    best_bid: Optional[Decimal] = None,
+    best_ask: Optional[Decimal] = None,
+    tick_size: Decimal = Decimal("0.01"),
     ticks_distance: int = 1,
     time_in_force: str = "gtc",
     client_order_id: Optional[str] = None,
@@ -269,8 +392,8 @@ def create_bbo_order(
         symbol: Trading symbol
         side: Order side ("buy" or "sell")
         quantity: Order quantity
-        best_bid: Current best bid price
-        best_ask: Current best ask price
+        best_bid: Current best bid price (optional)
+        best_ask: Current best ask price (optional)
         tick_size: Tick size for the symbol
         ticks_distance: Number of ticks away from best price (default: 1)
         time_in_force: Time in force (default: "gtc")
