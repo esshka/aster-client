@@ -376,20 +376,19 @@ class ZMQTradeListener:
                                     f"  Entry order placed - Account: {acc_id}, "
                                     f"Order ID: {res.entry_order.order_id}, "
                                     f"Price: {res.entry_order.price}, "
-                                    f"Quantity: {res.entry_order.quantity}, "
-                                    f"Side: {res.entry_order.side}"
+                                    f"Size: {res.entry_order.size}"
                                 )
-                            if res.tp_order:
+                            if res.take_profit_order:
                                 logger.info(
                                     f"  TP order placed - Account: {acc_id}, "
-                                    f"Order ID: {res.tp_order.order_id}, "
-                                    f"Price: {res.tp_order.price}"
+                                    f"Order ID: {res.take_profit_order.order_id}, "
+                                    f"Price: {res.take_profit_order.price}"
                                 )
-                            if res.sl_order:
+                            if res.stop_loss_order:
                                 logger.info(
                                     f"  SL order placed - Account: {acc_id}, "
-                                    f"Order ID: {res.sl_order.order_id}, "
-                                    f"Price: {res.sl_order.price}"
+                                    f"Order ID: {res.stop_loss_order.order_id}, "
+                                    f"Price: {res.stop_loss_order.price}"
                                 )
                         else:
                             failed_count += 1
