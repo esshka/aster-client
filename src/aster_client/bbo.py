@@ -9,11 +9,18 @@ the chance of maker fee execution while getting optimal pricing.
 Key Features:
 - Automatic BBO price calculation based on market price
 - Tick size support using SymbolInfo from public client
-- BUY orders: market price + 1 tick size
-- SELL orders: market price - 1 tick size
+- BUY orders: place below best bid (bid - N ticks) for maker orders
+- SELL orders: place above best ask (ask + N ticks) for maker orders
 - Price precision handling
 - Integration with existing order management system
-- Real-time BBO price updates via WebSocket
+- Real-time BBO price updates via WebSocket (!bookTicker stream)
+
+WebSocket Connection Compliance:
+- Automatic reconnection every 24 hours (exchange limit)
+- Ping/Pong heartbeat handling (30s client pings, auto-respond to server pings)
+- Automatic reconnection on connection errors with 5-second delay
+- Single !bookTicker stream (well under 200 stream subscription limit)
+- Handles server-side rate limiting (10 messages per second)
 """
 
 import asyncio
@@ -91,12 +98,28 @@ class BBOPriceCalculator:
     async def _ws_loop(self):
         """Main WebSocket loop for receiving BBO updates."""
         while self.running:
+            connection_start = time.time()
+            reconnect_needed = False
+            
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.ws_connect(self.ws_url) as ws:
+                    async with session.ws_connect(
+                        self.ws_url,
+                        heartbeat=30,  # Send pings every 30 seconds (server sends every 5 min)
+                        autoping=True,  # Automatically respond to server pings
+                    ) as ws:
                         self.logger.info("Connected to BBO WebSocket stream")
                         
                         async for msg in ws:
+                            # Check if we've been connected for 24 hours (enforce exchange limit)
+                            connection_duration = time.time() - connection_start
+                            if connection_duration >= 86400:  # 24 hours = 86400 seconds
+                                self.logger.info(
+                                    "WebSocket connection approaching 24-hour limit, reconnecting..."
+                                )
+                                reconnect_needed = True
+                                break
+                            
                             if not self.running:
                                 break
                                 
@@ -106,13 +129,36 @@ class BBOPriceCalculator:
                                     self._process_bbo_update(data)
                                 except Exception as e:
                                     self.logger.error(f"Error processing BBO message: {e}")
-                            elif msg.type == aiohttp.WSMsgType.ERROR:
-                                self.logger.error(f"WebSocket connection closed with error: {ws.exception()}")
+                            elif msg.type == aiohttp.WSMsgType.PING:
+                                # Server sent a ping, aiohttp will auto-respond with pong
+                                self.logger.debug("Received ping from server")
+                            elif msg.type == aiohttp.WSMsgType.PONG:
+                                # Response to our heartbeat ping
+                                self.logger.debug("Received pong from server")
+                            elif msg.type == aiohttp.WSMsgType.CLOSE:
+                                self.logger.warning(
+                                    f"WebSocket connection closed by server: {msg.data}"
+                                )
+                                reconnect_needed = True
                                 break
+                            elif msg.type == aiohttp.WSMsgType.ERROR:
+                                self.logger.error(f"WebSocket connection error: {ws.exception()}")
+                                reconnect_needed = True
+                                break
+                        
+                        # If we exit the loop normally (not an error), check if WebSocket is still open
+                        if not ws.closed and self.running:
+                            self.logger.warning("WebSocket loop exited unexpectedly")
+                            reconnect_needed = True
+                            
             except Exception as e:
                 self.logger.error(f"WebSocket connection error: {e}")
-                if self.running:
-                    await asyncio.sleep(5)  # Reconnect delay
+                reconnect_needed = True
+            
+            # Only reconnect if needed and still running
+            if reconnect_needed and self.running:
+                self.logger.info("Reconnecting in 5 seconds...")
+                await asyncio.sleep(5)
 
     def _process_bbo_update(self, data: Dict):
         """
