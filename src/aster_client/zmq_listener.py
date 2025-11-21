@@ -263,17 +263,26 @@ class ZMQTradeListener:
                 logger.warning("No accounts provided in message")
                 return
             
-            # Fetch market price and tick size from exchange
+            # Fetch market data from exchange
             logger.info(f"Fetching market data for {symbol}...")
             
-            # Get current market price from ticker
-            ticker = await self.public_client.get_ticker(symbol)
-            if not ticker or "markPrice" not in ticker:
-                logger.error(f"Failed to fetch market price for {symbol}")
+            # Get order book for best bid/ask
+            # We use a small limit (5) to minimize data transfer while getting top of book
+            order_book = await self.public_client.get_order_book(symbol, limit=5)
+            if not order_book or "bids" not in order_book or "asks" not in order_book:
+                logger.error(f"Failed to fetch order book for {symbol}")
                 return
             
-            market_price = Decimal(str(ticker["markPrice"]))
-            logger.info(f"Market price fetched: {market_price}")
+            # Extract best bid and ask
+            # Bids are sorted desc, Asks are sorted asc
+            # Format: [["price", "qty"], ...]
+            try:
+                best_bid = Decimal(order_book["bids"][0][0])
+                best_ask = Decimal(order_book["asks"][0][0])
+                logger.info(f"Market data fetched: Bid=${best_bid}, Ask=${best_ask}")
+            except (IndexError, ValueError) as e:
+                logger.error(f"Failed to parse order book for {symbol}: {e}")
+                return
             
             # Get tick size from symbol info (should be cached from warmup)
             symbol_info = await self.public_client.get_symbol_info(symbol)
@@ -286,7 +295,7 @@ class ZMQTradeListener:
             
             logger.info(
                 f"Starting trade execution - Symbol: {symbol}, Side: {side}, "
-                f"Accounts: {len(accounts_data)}, Market Price: {market_price}, "
+                f"Accounts: {len(accounts_data)}, Bid: {best_bid}, Ask: {best_ask}, "
                 f"Tick Size: {tick_size}, TP: {tp_percent}%, SL: {sl_percent}%, "
                 f"Ticks Distance: {ticks_distance}"
             )
@@ -336,7 +345,8 @@ class ZMQTradeListener:
                         symbol=symbol,
                         side=side,
                         quantity=qty,
-                        market_price=market_price,
+                        best_bid=best_bid,
+                        best_ask=best_ask,
                         tick_size=tick_size,
                         tp_percent=tp_percent,
                         sl_percent=sl_percent,

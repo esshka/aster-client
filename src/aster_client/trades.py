@@ -308,7 +308,8 @@ async def create_trade(
     symbol: str,
     side: str,
     quantity: Decimal,
-    market_price: Decimal,
+    best_bid: Decimal,
+    best_ask: Decimal,
     tick_size: Decimal,
     tp_percent: float,
     sl_percent: float,
@@ -333,7 +334,8 @@ async def create_trade(
         symbol: Trading symbol (e.g., "ETHUSDT")
         side: Order side ("buy" or "sell")
         quantity: Order quantity in base currency
-        market_price: Current market price for BBO calculation
+        best_bid: Current best bid price
+        best_ask: Current best ask price
         tick_size: Tick size for the symbol
         tp_percent: Take profit percentage (e.g., 1.0 for 1%)
         sl_percent: Stop loss percentage (e.g., 0.5 for 0.5%)
@@ -361,7 +363,8 @@ async def create_trade(
         sl_percent=sl_percent,
         created_at=datetime.now(timezone.utc).isoformat(),
         metadata={
-            "market_price": str(market_price),
+            "best_bid": str(best_bid),
+            "best_ask": str(best_ask),
             "tick_size": str(tick_size),
             "ticks_distance": ticks_distance,
         }
@@ -377,7 +380,8 @@ async def create_trade(
             symbol=symbol,
             side=side,
             quantity=quantity,
-            market_price=market_price,
+            best_bid=best_bid,
+            best_ask=best_ask,
             tick_size=tick_size,
             ticks_distance=ticks_distance,
             position_side=position_side,
@@ -427,7 +431,9 @@ async def create_trade(
         trade.entry_order.filled_at = datetime.now(timezone.utc).isoformat()
         trade.filled_at = trade.entry_order.filled_at
         
-        entry_fill_price = filled_order.average_price or market_price
+        # Use best bid/ask as fallback if fill price is missing
+        fallback_price = best_bid if side.lower() == "buy" else best_ask
+        entry_fill_price = filled_order.average_price or fallback_price
         logger.info(f"✅ Entry filled at ${entry_fill_price}")
         
         # Step 3: Calculate TP/SL prices

@@ -76,7 +76,8 @@ class BBOPriceCalculator:
         self,
         symbol: str,
         side: str,
-        market_price: Decimal,
+        best_bid: Decimal,
+        best_ask: Decimal,
         tick_size: Decimal,
         ticks_distance: int = 1,
     ) -> Decimal:
@@ -86,9 +87,10 @@ class BBOPriceCalculator:
         Args:
             symbol: Trading symbol
             side: Order side ("buy" or "sell")
-            market_price: Current market price
+            best_bid: Current best bid price
+            best_ask: Current best ask price
             tick_size: Tick size for the symbol
-            ticks_distance: Number of ticks away from market price (default: 1)
+            ticks_distance: Number of ticks away from best price (default: 1)
 
         Returns:
             Calculated BBO price
@@ -103,8 +105,8 @@ class BBOPriceCalculator:
         if side_lower not in ["buy", "sell"]:
             raise ValueError("Side must be 'buy' or 'sell'")
 
-        if market_price <= 0:
-            raise ValueError("Market price must be greater than 0")
+        if best_bid <= 0 or best_ask <= 0:
+            raise ValueError("Best bid and ask must be greater than 0")
 
         if tick_size <= 0:
             raise ValueError("Tick size must be greater than 0")
@@ -116,11 +118,25 @@ class BBOPriceCalculator:
         price_adjustment = tick_size * ticks_distance
         
         if side_lower == "buy":
-            # For buy orders: place N ticks above market price
-            bbo_price = market_price + price_adjustment
+            # For buy orders: place N ticks above best bid (improve bid)
+            # Note: If ticks_distance is large, this might cross the spread (best_ask)
+            bbo_price = best_bid + price_adjustment
+            
+            # Warning if crossing spread
+            if bbo_price >= best_ask:
+                self.logger.warning(
+                    f"BBO Buy Price {bbo_price} crosses spread (Best Ask: {best_ask})"
+                )
         else:  # sell
-            # For sell orders: place N ticks below market price
-            bbo_price = market_price - price_adjustment
+            # For sell orders: place N ticks below best ask (improve ask)
+            # Note: If ticks_distance is large, this might cross the spread (best_bid)
+            bbo_price = best_ask - price_adjustment
+            
+            # Warning if crossing spread
+            if bbo_price <= best_bid:
+                self.logger.warning(
+                    f"BBO Sell Price {bbo_price} crosses spread (Best Bid: {best_bid})"
+                )
 
         # Round to appropriate precision based on tick size
         precision = self._get_price_precision(tick_size)
@@ -128,7 +144,8 @@ class BBOPriceCalculator:
 
         self.logger.info(
             f"🎯 BBO Price Calculation: {symbol} {side.upper()} "
-            f"Market: ${market_price:.{precision}f} → BBO: ${bbo_price:.{precision}f} "
+            f"Bid: ${best_bid:.{precision}f} Ask: ${best_ask:.{precision}f} "
+            f"→ BBO: ${bbo_price:.{precision}f} "
             f"({ticks_distance} tick{'s' if ticks_distance > 1 else ''}: {price_adjustment})"
         )
 
@@ -164,7 +181,8 @@ class BBOPriceCalculator:
         symbol: str,
         side: str,
         bbo_price: Decimal,
-        market_price: Decimal,
+        best_bid: Decimal,
+        best_ask: Decimal,
         tick_size: Decimal,
         ticks_distance: int = 1,
     ) -> bool:
@@ -175,16 +193,17 @@ class BBOPriceCalculator:
             symbol: Trading symbol
             side: Order side
             bbo_price: Calculated BBO price
-            market_price: Current market price
+            best_bid: Current best bid price
+            best_ask: Current best ask price
             tick_size: Tick size for the symbol
-            ticks_distance: Number of ticks away from market price (default: 1)
+            ticks_distance: Number of ticks away from best price (default: 1)
 
         Returns:
             True if BBO price is valid, False otherwise
         """
         try:
             expected_bbo = self.calculate_bbo_price(
-                symbol, side, market_price, tick_size, ticks_distance
+                symbol, side, best_bid, best_ask, tick_size, ticks_distance
             )
             tolerance = tick_size / Decimal("100")  # Small tolerance
             is_valid = abs(bbo_price - expected_bbo) <= tolerance
@@ -207,7 +226,8 @@ _default_calculator = BBOPriceCalculator()
 def calculate_bbo_price(
     symbol: str,
     side: str,
-    market_price: Decimal,
+    best_bid: Decimal,
+    best_ask: Decimal,
     tick_size: Decimal,
     ticks_distance: int = 1,
 ) -> Decimal:
@@ -217,15 +237,16 @@ def calculate_bbo_price(
     Args:
         symbol: Trading symbol
         side: Order side ("buy" or "sell")
-        market_price: Current market price
+        best_bid: Current best bid price
+        best_ask: Current best ask price
         tick_size: Tick size for the symbol
-        ticks_distance: Number of ticks away from market price (default: 1)
+        ticks_distance: Number of ticks away from best price (default: 1)
 
     Returns:
         Calculated BBO price
     """
     return _default_calculator.calculate_bbo_price(
-        symbol, side, market_price, tick_size, ticks_distance
+        symbol, side, best_bid, best_ask, tick_size, ticks_distance
     )
 
 
@@ -233,7 +254,8 @@ def create_bbo_order(
     symbol: str,
     side: str,
     quantity: Decimal,
-    market_price: Decimal,
+    best_bid: Decimal,
+    best_ask: Decimal,
     tick_size: Decimal,
     ticks_distance: int = 1,
     time_in_force: str = "gtc",
@@ -247,9 +269,10 @@ def create_bbo_order(
         symbol: Trading symbol
         side: Order side ("buy" or "sell")
         quantity: Order quantity
-        market_price: Current market price
+        best_bid: Current best bid price
+        best_ask: Current best ask price
         tick_size: Tick size for the symbol
-        ticks_distance: Number of ticks away from market price (default: 1)
+        ticks_distance: Number of ticks away from best price (default: 1)
         time_in_force: Time in force (default: "gtc")
         client_order_id: Optional client order ID
         position_side: Optional position side for hedge mode
@@ -257,7 +280,9 @@ def create_bbo_order(
     Returns:
         OrderRequest with BBO price
     """
-    bbo_price = calculate_bbo_price(symbol, side, market_price, tick_size, ticks_distance)
+    bbo_price = calculate_bbo_price(
+        symbol, side, best_bid, best_ask, tick_size, ticks_distance
+    )
 
     return OrderRequest(
         symbol=symbol,
@@ -280,23 +305,21 @@ if __name__ == "__main__":
 
     # Test price calculation
     test_cases = [
-        ("BTCUSDT", "buy", Decimal("50000.0"), Decimal("0.1")),
-        ("BTCUSDT", "sell", Decimal("50000.0"), Decimal("0.1")),
-        ("ETHUSDT", "buy", Decimal("3000.0"), Decimal("0.01")),
-        ("ETHUSDT", "sell", Decimal("3000.0"), Decimal("0.01")),
-        ("ADAUSDT", "buy", Decimal("0.5000"), Decimal("0.0001")),
-        ("ADAUSDT", "sell", Decimal("0.5000"), Decimal("0.0001")),
+        ("BTCUSDT", "buy", Decimal("50000.0"), Decimal("50001.0"), Decimal("0.1")),
+        ("BTCUSDT", "sell", Decimal("50000.0"), Decimal("50001.0"), Decimal("0.1")),
+        ("ETHUSDT", "buy", Decimal("3000.0"), Decimal("3001.0"), Decimal("0.01")),
+        ("ETHUSDT", "sell", Decimal("3000.0"), Decimal("3001.0"), Decimal("0.01")),
     ]
 
     calculator = BBOPriceCalculator()
 
-    for symbol, side, market_price, tick_size in test_cases:
+    for symbol, side, best_bid, best_ask, tick_size in test_cases:
         bbo_price = calculator.calculate_bbo_price(
-            symbol, side, market_price, tick_size
+            symbol, side, best_bid, best_ask, tick_size
         )
         print(
             f"{symbol} {side.upper()}: "
-            f"Market ${market_price} → BBO ${bbo_price}"
+            f"Bid ${best_bid} Ask ${best_ask} → BBO ${bbo_price}"
         )
 
     print("\n✅ Demo completed!")
