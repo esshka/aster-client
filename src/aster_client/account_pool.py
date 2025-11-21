@@ -151,14 +151,23 @@ class AccountPool:
     async def _initialize_clients(self) -> None:
         """Initialize AsterClient instances for all accounts."""
         for account_config in self._accounts:
-            conn_config = ConnectionConfig(
-                api_key=account_config.api_key,
-                api_secret=account_config.api_secret,
-                base_url=account_config.base_url,
-                timeout=account_config.timeout,
-                simulation=account_config.simulation,
-                recv_window=account_config.recv_window,
-            )
+            # Prepare connection config parameters
+            conn_params = {
+                'api_key': account_config.api_key,
+                'api_secret': account_config.api_secret,
+                'simulation': account_config.simulation,
+                'recv_window': account_config.recv_window,
+            }
+            
+            # Only include base_url if explicitly set to avoid overriding the default
+            if account_config.base_url is not None:
+                conn_params['base_url'] = account_config.base_url
+            
+            # Only include timeout if explicitly set
+            if account_config.timeout is not None:
+                conn_params['timeout'] = account_config.timeout
+            
+            conn_config = ConnectionConfig(**conn_params)
             
             client = AsterClient(conn_config, self._retry_config)
             self._clients[account_config.id] = client

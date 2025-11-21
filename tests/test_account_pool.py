@@ -156,6 +156,43 @@ class TestAccountPoolClientManagement:
         
         client = pool.get_client("nonexistent")
         assert client is None
+    
+    @pytest.mark.asyncio
+    async def test_initialize_clients_with_default_base_url(self):
+        """Test that clients are initialized with default base_url when not provided."""
+        accounts = [
+            AccountConfig(id="acc1", api_key="key1key1key1key1key1key1", api_secret="sec1sec1sec1sec1sec1sec1"),
+        ]
+        
+        pool = AccountPool(accounts)
+        await pool._initialize_clients()
+        
+        client = pool.get_client("acc1")
+        assert client is not None
+        # Verify that the client's base_url is set to the ConnectionConfig default
+        assert client._config.base_url == "https://fapi.asterdex.com"
+    
+    @pytest.mark.asyncio
+    async def test_initialize_clients_with_custom_base_url(self):
+        """Test that clients are initialized with custom base_url when provided."""
+        custom_url = "https://custom.api.com"
+        accounts = [
+            AccountConfig(
+                id="acc1", 
+                api_key="key1key1key1key1key1key1", 
+                api_secret="sec1sec1sec1sec1sec1sec1",
+                base_url=custom_url
+            ),
+        ]
+        
+        pool = AccountPool(accounts)
+        await pool._initialize_clients()
+        
+        client = pool.get_client("acc1")
+        assert client is not None
+        # Verify that the client's base_url is set to the custom value
+        assert client._config.base_url == custom_url
+
 
 
 class TestAccountPoolContextManager:
