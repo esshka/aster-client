@@ -120,7 +120,8 @@ class AsterClient:
         symbol: str,
         side: str,
         quantity: Decimal,
-        market_price: Decimal,
+        best_bid: Decimal,
+        best_ask: Decimal,
         tick_size: Decimal,
         ticks_distance: int = 1,
         time_in_force: str = "gtc",
@@ -130,17 +131,18 @@ class AsterClient:
         """
         Place a BBO (Best Bid Offer) order with automatic price calculation.
 
-        BBO orders are placed N ticks away from market price:
-        - BUY orders: market_price + (tick_size * ticks_distance)
-        - SELL orders: market_price - (tick_size * ticks_distance)
+        BBO orders are placed N ticks away from best bid/ask:
+        - BUY orders: best_bid + (tick_size * ticks_distance)
+        - SELL orders: best_ask - (tick_size * ticks_distance)
 
         Args:
             symbol: Trading symbol (e.g., "BTCUSDT")
             side: Order side ("buy" or "sell")
             quantity: Order quantity
-            market_price: Current market price
+            best_bid: Current best bid price
+            best_ask: Current best ask price
             tick_size: Tick size for the symbol
-            ticks_distance: Number of ticks away from market price (default: 1)
+            ticks_distance: Number of ticks away from best price (default: 1)
             time_in_force: Time in force (default: "gtc")
             client_order_id: Optional client order ID
             position_side: Optional position side for hedge mode
@@ -153,7 +155,7 @@ class AsterClient:
         """
         # Calculate BBO price
         bbo_price = self._bbo_calculator.calculate_bbo_price(
-            symbol, side, market_price, tick_size, ticks_distance
+            symbol, side, best_bid, best_ask, tick_size, ticks_distance
         )
 
         # Create order request with BBO price

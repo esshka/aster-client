@@ -4,6 +4,7 @@ Constants for the Aster client.
 
 # API Configuration
 DEFAULT_BASE_URL = "https://fapi.asterdex.com"
+DEFAULT_WS_URL = "wss://fstream.asterdex.com/ws/!bookTicker"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_RETRY_DELAY = 1.0
 DEFAULT_MAX_RETRIES = 3
