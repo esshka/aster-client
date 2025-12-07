@@ -1,0 +1,28 @@
+# Example configuration file for multi-account information script
+# 
+# Copy this file to accounts_config.yml and add your real credentials.
+# The accounts_config.yml file is ignored by git for security.
+#
+# Usage:
+#   cp accounts_config.example.yml accounts_config.yml
+#   # Edit accounts_config.yml with your actual API credentials
+#   poetry run python examples/multi_account_info.py
+
+accounts:
+  # First account
+  - id: "main_account"
+    api_key: "your_api_key_here"
+    api_secret: "your_api_secret_here"
+    # Optional settings:
+    # simulation: false        # Enable simulation mode (default: false)
+    # recv_window: 10000       # Receive window in ms (default: 10000)
+
+  # Second account (example)
+  - id: "secondary_account"
+    api_key: "another_api_key_here"
+    api_secret: "another_api_secret_here"
+
+  # Add more accounts as needed...
+  # - id: "account_3"
+  #   api_key: "key3"
+  #   api_secret: "secret3"
