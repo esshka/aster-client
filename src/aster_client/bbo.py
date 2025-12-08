@@ -46,9 +46,9 @@ class BBOPriceCalculator:
     This class implements the Singleton pattern to maintain a single WebSocket
     connection for real-time BBO updates.
 
-    For BBO logic:
-    - Buy orders: Place at current market price + 1 tick size
-    - Sell orders: Place at current market price - 1 tick size
+    For BBO logic (maker-side pricing):
+    - Buy orders: Place at best_bid - N ticks (below best bid to stay maker)
+    - Sell orders: Place at best_ask + N ticks (above best ask to stay maker)
     """
     
     _instance = None

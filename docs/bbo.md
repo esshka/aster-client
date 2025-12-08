@@ -17,46 +17,53 @@ BBO orders are limit orders strategically placed near the market price to:
 ### Price Calculation
 
 The BBO price is calculated based on:
-- **Current market price**: The reference price from which to offset
+- **Best bid/ask**: The current order book top prices
 - **Tick size**: The minimum price increment for the symbol
-- **Ticks distance**: How many ticks away from market price (configurable, default: 1)
+- **Ticks distance**: How many ticks away from best prices (configurable, default: 1)
 
-**Formula:**
+**Formula (Maker-Side Pricing):**
 ```
-BUY orders:  BBO Price = Market Price + (Tick Size × Ticks Distance)
-SELL orders: BBO Price = Market Price - (Tick Size × Ticks Distance)
+BUY orders:  BBO Price = Best Bid - (Tick Size × Ticks Distance)
+SELL orders: BBO Price = Best Ask + (Tick Size × Ticks Distance)
 ```
+
+> **Why?** Placing BUY orders below the best bid and SELL orders above the best ask
+> ensures your order doesn't cross the spread, guaranteeing execution as a maker order
+> with lower (or rebate) fees.
 
 ### Examples
 
 **Example 1: BTC with 1 tick distance (default)**
 ```
-Market Price: $92,419.60
+Best Bid: $92,419.60
+Best Ask: $92,419.70
 Tick Size: $0.10
 Ticks Distance: 1 (default)
 
-BUY BBO Price:  $92,419.60 + ($0.10 × 1) = $92,419.70
-SELL BBO Price: $92,419.60 - ($0.10 × 1) = $92,419.50
+BUY BBO Price:  $92,419.60 - ($0.10 × 1) = $92,419.50 (below best bid = maker)
+SELL BBO Price: $92,419.70 + ($0.10 × 1) = $92,419.80 (above best ask = maker)
 ```
 
 **Example 2: BTC with 5 tick distance**
 ```
-Market Price: $92,419.60
+Best Bid: $92,419.60
+Best Ask: $92,419.70
 Tick Size: $0.10
 Ticks Distance: 5
 
-BUY BBO Price:  $92,419.60 + ($0.10 × 5) = $92,420.10
-SELL BBO Price: $92,419.60 - ($0.10 × 5) = $92,419.10
+BUY BBO Price:  $92,419.60 - ($0.10 × 5) = $92,419.10 (5 ticks below bid)
+SELL BBO Price: $92,419.70 + ($0.10 × 5) = $92,420.20 (5 ticks above ask)
 ```
 
 **Example 3: ETH with custom tick distance**
 ```
-Market Price: $3,000.00
+Best Bid: $3,000.00
+Best Ask: $3,000.05
 Tick Size: $0.01
 Ticks Distance: 3
 
-BUY BBO Price:  $3,000.00 + ($0.01 × 3) = $3,000.03
-SELL BBO Price: $3,000.00 - ($0.01 × 3) = $2,999.97
+BUY BBO Price:  $3,000.00 - ($0.01 × 3) = $2,999.97 (3 ticks below bid)
+SELL BBO Price: $3,000.05 + ($0.01 × 3) = $3,000.08 (3 ticks above ask)
 ```
 
 ## Use Cases

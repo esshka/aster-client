@@ -36,8 +36,8 @@ class TestBBOPriceCalculator:
             symbol, side, best_bid, best_ask, tick_size
         )
 
-        # BUY orders should be best_bid + tick_size
-        assert bbo_price == Decimal("50000.1")
+        # BUY orders should be best_bid - tick_size (stay on maker side, below best bid)
+        assert bbo_price == Decimal("49999.9")
 
     def test_calculate_bbo_price_sell(self, calculator):
         """Test BBO price calculation for SELL orders."""
@@ -51,16 +51,17 @@ class TestBBOPriceCalculator:
             symbol, side, best_bid, best_ask, tick_size
         )
 
-        # SELL orders should be best_ask - tick_size
-        assert bbo_price == Decimal("50000.4")
+        # SELL orders should be best_ask + tick_size (stay on maker side, above best ask)
+        assert bbo_price == Decimal("50000.6")
 
     def test_calculate_bbo_price_different_tick_sizes(self, calculator):
         """Test BBO price calculation with different tick sizes."""
+        # BUY: bid - tick (maker side), SELL: ask + tick (maker side)
         test_cases = [
-            ("BTCUSDT", "buy", Decimal("50000.0"), Decimal("50000.5"), Decimal("0.1"), Decimal("50000.1")),
-            ("ETHUSDT", "buy", Decimal("3000.0"), Decimal("3000.5"), Decimal("0.01"), Decimal("3000.01")),
-            ("ADAUSDT", "buy", Decimal("0.5000"), Decimal("0.5005"), Decimal("0.0001"), Decimal("0.5001")),
-            ("DOTUSDT", "sell", Decimal("9.900"), Decimal("10.000"), Decimal("0.001"), Decimal("9.999")),
+            ("BTCUSDT", "buy", Decimal("50000.0"), Decimal("50000.5"), Decimal("0.1"), Decimal("49999.9")),
+            ("ETHUSDT", "buy", Decimal("3000.0"), Decimal("3000.5"), Decimal("0.01"), Decimal("2999.99")),
+            ("ADAUSDT", "buy", Decimal("0.5000"), Decimal("0.5005"), Decimal("0.0001"), Decimal("0.4999")),
+            ("DOTUSDT", "sell", Decimal("9.900"), Decimal("10.000"), Decimal("0.001"), Decimal("10.001")),
         ]
 
         for symbol, side, best_bid, best_ask, tick_size, expected in test_cases:
@@ -71,29 +72,29 @@ class TestBBOPriceCalculator:
 
     def test_calculate_bbo_price_with_ticks_distance(self, calculator):
         """Test BBO price calculation with custom ticks distance."""
-        # BUY with 2 ticks distance
+        # BUY with 2 ticks distance: bid - (tick * distance) to stay on maker side
         result = calculator.calculate_bbo_price(
             "BTCUSDT", "buy", Decimal("50000.0"), Decimal("50000.5"), Decimal("0.1"), ticks_distance=2
         )
-        assert result == Decimal("50000.2")  # bid + (0.1 * 2)
+        assert result == Decimal("49999.8")  # bid - (0.1 * 2)
 
-        # SELL with 3 ticks distance
+        # SELL with 3 ticks distance: ask + (tick * distance) to stay on maker side
         result = calculator.calculate_bbo_price(
             "ETHUSDT", "sell", Decimal("2999.0"), Decimal("3000.0"), Decimal("0.01"), ticks_distance=3
         )
-        assert result == Decimal("2999.97")  # ask - (0.01 * 3)
+        assert result == Decimal("3000.03")  # ask + (0.01 * 3)
 
         # BUY with 5 ticks distance
         result = calculator.calculate_bbo_price(
             "ADAUSDT", "buy", Decimal("0.5000"), Decimal("0.5010"), Decimal("0.0001"), ticks_distance=5
         )
-        assert result == Decimal("0.5005")  # bid + (0.0001 * 5)
+        assert result == Decimal("0.4995")  # bid - (0.0001 * 5)
 
         # SELL with 10 ticks distance
         result = calculator.calculate_bbo_price(
             "DOTUSDT", "sell", Decimal("9.900"), Decimal("10.000"), Decimal("0.001"), ticks_distance=10
         )
-        assert result == Decimal("9.990")  # ask - (0.001 * 10)
+        assert result == Decimal("10.01")  # ask + (0.001 * 10)
 
     def test_price_precision(self, calculator):
         """Test price precision calculation."""
@@ -113,14 +114,14 @@ class TestBBOPriceCalculator:
         best_ask = Decimal("50000.5")
         tick_size = Decimal("0.1")
 
-        # Correct BBO price
-        bbo_price = Decimal("50000.1")
+        # Correct BBO price (bid - tick for maker)
+        bbo_price = Decimal("49999.9")
         assert calculator.validate_bbo_price(
             symbol, side, bbo_price, best_bid, best_ask, tick_size
         )
 
         # Incorrect BBO price
-        wrong_price = Decimal("50000.2")
+        wrong_price = Decimal("50000.1")
         assert not calculator.validate_bbo_price(
             symbol, side, wrong_price, best_bid, best_ask, tick_size
         )
@@ -251,8 +252,9 @@ class TestConvenienceFunctions:
         best_ask = Decimal("50000.5")
         tick_size = Decimal("0.1")
 
+        # BUY = bid - tick for maker order
         bbo_price = calculate_bbo_price(symbol, side, best_bid, best_ask, tick_size)
-        assert bbo_price == Decimal("50000.1")
+        assert bbo_price == Decimal("49999.9")
 
     def test_create_bbo_order(self):
         """Test create_bbo_order convenience function."""
@@ -278,7 +280,7 @@ class TestConvenienceFunctions:
         assert order.side == "buy"
         assert order.order_type == "limit"
         assert order.quantity == quantity
-        assert order.price == Decimal("50000.1")
+        assert order.price == Decimal("49999.9")  # bid - tick for maker
         assert order.time_in_force == "gtc"
         assert order.client_order_id == "test123"
         assert order.position_side == "LONG"
@@ -295,12 +297,12 @@ class TestConvenienceFunctions:
         )
 
         assert order.side == "sell"
-        assert order.price == Decimal("2999.99")
+        assert order.price == Decimal("3000.01")  # ask + tick for maker
         assert order.position_side is None
 
     def test_create_bbo_order_with_ticks_distance(self):
         """Test create_bbo_order with custom ticks distance."""
-        # BUY with 3 ticks distance
+        # BUY with 3 ticks distance: bid - (tick * 3) for maker
         order = create_bbo_order(
             symbol="BTCUSDT",
             side="buy",
@@ -313,9 +315,9 @@ class TestConvenienceFunctions:
 
         assert order.symbol == "BTCUSDT"
         assert order.side == "buy"
-        assert order.price == Decimal("50000.3")  # market + (0.1 * 3)
+        assert order.price == Decimal("49999.7")  # bid - (0.1 * 3)
 
-        # SELL with 5 ticks distance
+        # SELL with 5 ticks distance: ask + (tick * 5) for maker
         order = create_bbo_order(
             symbol="ETHUSDT",
             side="sell",
@@ -327,7 +329,7 @@ class TestConvenienceFunctions:
         )
 
         assert order.side == "sell"
-        assert order.price == Decimal("2999.95")  # market - (0.01 * 5)
+        assert order.price == Decimal("3000.05")  # ask + (0.01 * 5)
 
 
 if __name__ == "__main__":

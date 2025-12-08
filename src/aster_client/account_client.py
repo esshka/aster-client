@@ -131,9 +131,11 @@ class AsterClient:
         """
         Place a BBO (Best Bid Offer) order with automatic price calculation.
 
-        BBO orders are placed N ticks away from best bid/ask:
-        - BUY orders: best_bid + (tick_size * ticks_distance)
-        - SELL orders: best_ask - (tick_size * ticks_distance)
+        BBO orders are placed N ticks AWAY from the spread to ensure maker fees:
+        - BUY orders: best_bid - (tick_size * ticks_distance) (below best bid)
+        - SELL orders: best_ask + (tick_size * ticks_distance) (above best ask)
+
+        This ensures orders don't cross the spread and execute as maker orders.
 
         Args:
             symbol: Trading symbol (e.g., "BTCUSDT")
