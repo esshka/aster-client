@@ -9,10 +9,9 @@ This example demonstrates how to:
 4. Calculate BBO prices for buy and sell orders
 5. Place a BBO order with automatic price calculation
 
-BBO orders are placed one tick away from best bid/ask to maximize
-the chance of maker fee execution while getting optimal pricing:
-- BUY orders: best_bid + tick_size
-- SELL orders: best_ask - tick_size
+BBO orders are placed N ticks AWAY from the spread to ensure maker fees:
+- BUY orders: best_bid - tick_size (below best bid = maker)
+- SELL orders: best_ask + tick_size (above best ask = maker)
 
 Prerequisites:
 - Set ASTER_API_KEY and ASTER_API_SECRET environment variables
@@ -55,8 +54,8 @@ async def main():
     """Main function to demonstrate BBO order placement."""
 
     # Configuration
-    SYMBOL = "BTCUSDT"
-    QUANTITY = Decimal("0.001")  # 0.001 BTC
+    SYMBOL = "SOLUSDT"
+    QUANTITY = Decimal("0.05")  # 0.05 SOL
     SIDE = "buy"  # "buy" or "sell"
     TICKS_DISTANCE = 1  # Number of ticks away from market price (default: 1)
     # TICKS_DISTANCE = 2 would place order 2 ticks away from market
@@ -125,12 +124,13 @@ async def main():
 
             price_adjustment = tick_size * TICKS_DISTANCE
             logger.info(
-                f"BUY BBO Price:  ${buy_bbo_price} (bid + {TICKS_DISTANCE} tick{'s' if TICKS_DISTANCE > 1 else ''} = +${price_adjustment})"
+                f"BUY BBO Price:  ${buy_bbo_price} (bid - {TICKS_DISTANCE} tick{'s' if TICKS_DISTANCE > 1 else ''} = -${price_adjustment}) [maker: below bid]"
             )
             logger.info(
-                f"SELL BBO Price: ${sell_bbo_price} (ask - {TICKS_DISTANCE} tick{'s' if TICKS_DISTANCE > 1 else ''} = -${price_adjustment})"
+                f"SELL BBO Price: ${sell_bbo_price} (ask + {TICKS_DISTANCE} tick{'s' if TICKS_DISTANCE > 1 else ''} = +${price_adjustment}) [maker: above ask]"
             )
             logger.info("=" * 60)
+
 
             # Step 4: Get account information
             logger.info("\nRetrieving account information...")

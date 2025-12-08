@@ -37,6 +37,17 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+# BBO Retry Exceptions
+class BBORetryExhausted(Exception):
+    """Raised when BBO order retry limit is exhausted without fill."""
+    pass
+
+
+class BBOPriceChaseExceeded(Exception):
+    """Raised when BBO price chase exceeds max allowed deviation."""
+    pass
+
+
 class AsterClient:
     """
     Main Aster client orchestrator.
@@ -174,6 +185,166 @@ class AsterClient:
 
         # Place the order
         return await self.place_order(order)
+
+    async def place_bbo_order_with_retry(
+        self,
+        symbol: str,
+        side: str,
+        quantity: Decimal,
+        tick_size: Decimal,
+        ticks_distance: int = 1,
+        max_retries: int = 2,
+        fill_timeout_ms: int = 1000,
+        max_chase_percent: float = 0.5,
+        time_in_force: str = "gtc",
+        client_order_id: Optional[str] = None,
+        position_side: Optional[str] = None,
+    ) -> OrderResponse:
+        """
+        Place a BBO order with automatic retry on unfilled orders.
+
+        This method places a BBO order and automatically retries with updated
+        prices if the order doesn't fill within the specified timeout. It will
+        stop retrying if the price moves beyond the max chase limit.
+
+        Args:
+            symbol: Trading symbol (e.g., "BTCUSDT")
+            side: Order side ("buy" or "sell")
+            quantity: Order quantity
+            tick_size: Tick size for the symbol
+            ticks_distance: Number of ticks away from best price (default: 1)
+            max_retries: Maximum retry attempts (default: 2)
+            fill_timeout_ms: Time to wait for fill before retry in ms (default: 1000)
+            max_chase_percent: Maximum price deviation from original (default: 0.5%)
+            time_in_force: Time in force (default: "gtc")
+            client_order_id: Optional client order ID
+            position_side: Optional position side for hedge mode
+
+        Returns:
+            OrderResponse with filled order details
+
+        Raises:
+            BBORetryExhausted: If max retries exceeded without fill
+            BBOPriceChaseExceeded: If price moved beyond max chase limit
+            ValueError: If BBO prices not available
+        """
+        # Get initial BBO prices from cache
+        bbo = self._bbo_calculator.get_bbo(symbol)
+        if not bbo:
+            raise ValueError(f"BBO prices not available for {symbol}. Ensure WebSocket is connected.")
+        
+        original_best_bid, original_best_ask = bbo
+        original_reference = original_best_bid if side.lower() == "buy" else original_best_ask
+        
+        attempts = 0
+        last_order_response = None
+        
+        while attempts <= max_retries:
+            # Get fresh BBO prices for each attempt
+            bbo = self._bbo_calculator.get_bbo(symbol)
+            if not bbo:
+                raise ValueError(f"BBO prices not available for {symbol}")
+            
+            best_bid, best_ask = bbo
+            current_reference = best_bid if side.lower() == "buy" else best_ask
+            
+            # Check price deviation (except for first attempt)
+            if attempts > 0:
+                deviation = self._calculate_price_deviation(original_reference, current_reference)
+                if deviation > max_chase_percent:
+                    logger.warning(
+                        f"BBO price chase exceeded: {deviation:.3f}% > {max_chase_percent}% max. "
+                        f"Original: {original_reference}, Current: {current_reference}"
+                    )
+                    raise BBOPriceChaseExceeded(
+                        f"Price moved {deviation:.3f}% from original, exceeds {max_chase_percent}% limit"
+                    )
+            
+            # Calculate BBO price and place order
+            bbo_price = self._bbo_calculator.calculate_bbo_price(
+                symbol, side, best_bid, best_ask, tick_size, ticks_distance
+            )
+            
+            logger.info(
+                f"🎯 BBO Order Attempt {attempts + 1}/{max_retries + 1}: "
+                f"{symbol} {side.upper()} @ {bbo_price}"
+            )
+            
+            order = OrderRequest(
+                symbol=symbol,
+                side=side.lower(),
+                order_type="limit",
+                quantity=quantity,
+                price=bbo_price,
+                time_in_force=time_in_force,
+                client_order_id=client_order_id,
+                position_side=position_side,
+            )
+            
+            last_order_response = await self.place_order(order)
+            
+            # Wait for fill
+            fill_timeout_s = fill_timeout_ms / 1000.0
+            await asyncio.sleep(fill_timeout_s)
+            
+            # Check if filled
+            order_status = await self.get_order(
+                symbol=symbol,
+                order_id=int(last_order_response.order_id)
+            )
+            
+            if order_status and order_status.status in ["FILLED", "COMPLETED"]:
+                logger.info(
+                    f"✅ BBO Order filled on attempt {attempts + 1}: "
+                    f"ID={order_status.order_id}, Price={order_status.average_price}"
+                )
+                return order_status
+            
+            # Not filled - cancel and retry
+            if attempts < max_retries:
+                logger.info(
+                    f"⏳ BBO Order not filled after {fill_timeout_ms}ms, "
+                    f"cancelling and retrying ({max_retries - attempts} retries left)"
+                )
+                try:
+                    await self.cancel_order(
+                        symbol=symbol,
+                        order_id=int(last_order_response.order_id)
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to cancel order {last_order_response.order_id}: {e}")
+            
+            attempts += 1
+        
+        # All retries exhausted
+        logger.error(
+            f"❌ BBO Order retry exhausted after {max_retries + 1} attempts. "
+            f"Last order: {last_order_response.order_id if last_order_response else 'None'}"
+        )
+        
+        # Cancel the last order if it exists
+        if last_order_response:
+            try:
+                await self.cancel_order(
+                    symbol=symbol,
+                    order_id=int(last_order_response.order_id)
+                )
+            except Exception as e:
+                logger.warning(f"Failed to cancel final order: {e}")
+        
+        raise BBORetryExhausted(
+            f"BBO order not filled after {max_retries + 1} attempts"
+        )
+
+    def _calculate_price_deviation(
+        self,
+        original_price: Decimal,
+        current_price: Decimal,
+    ) -> float:
+        """Calculate percent deviation between prices."""
+        if original_price <= 0:
+            return 0.0
+        return float(abs(current_price - original_price) / original_price * 100)
 
     async def cancel_order(
         self,

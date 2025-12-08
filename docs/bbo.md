@@ -186,6 +186,81 @@ async def place_bbo_buy_order():
         print(f"Market price was ${market_price}")
 ```
 
+### `place_bbo_order_with_retry()`
+
+Place a BBO order with automatic retry on unfilled orders.
+
+This method places a BBO order and automatically retries with updated prices if the order doesn't fill within the specified timeout. It will stop retrying if the price moves beyond the max chase limit.
+
+**Method Signature:**
+```python
+async def place_bbo_order_with_retry(
+    symbol: str,
+    side: str,
+    quantity: Decimal,
+    tick_size: Decimal,
+    ticks_distance: int = 1,
+    max_retries: int = 2,
+    fill_timeout_ms: int = 1000,
+    max_chase_percent: float = 0.5,
+    time_in_force: str = "gtc",
+    client_order_id: Optional[str] = None,
+    position_side: Optional[str] = None,
+) -> OrderResponse
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `symbol` | `str` | Yes | - | Trading symbol (e.g., "BTCUSDT") |
+| `side` | `str` | Yes | - | Order side: "buy" or "sell" |
+| `quantity` | `Decimal` | Yes | - | Order quantity |
+| `tick_size` | `Decimal` | Yes | - | Tick size for the symbol |
+| `ticks_distance` | `int` | No | `1` | Number of ticks away from best price |
+| `max_retries` | `int` | No | `2` | Maximum retry attempts |
+| `fill_timeout_ms` | `int` | No | `1000` | Time to wait for fill before retry (ms) |
+| `max_chase_percent` | `float` | No | `0.5` | Maximum price deviation from original (%) |
+| `time_in_force` | `str` | No | `"gtc"` | Time in force |
+| `client_order_id` | `str` | No | `None` | Custom client order ID |
+| `position_side` | `str` | No | `None` | Position side for hedge mode |
+
+**Returns:**
+- `OrderResponse`: Filled order details
+
+**Raises:**
+- `BBORetryExhausted`: If max retries exceeded without fill
+- `BBOPriceChaseExceeded`: If price moved beyond max chase limit
+- `ValueError`: If BBO prices not available
+
+**Example:**
+```python
+from decimal import Decimal
+from aster_client import AsterClient, BBORetryExhausted, BBOPriceChaseExceeded
+
+async def place_bbo_with_retry():
+    async with AsterClient.from_env() as client:
+        try:
+            # Aggressive fill: 5 retries, 500ms timeout, 1% chase limit
+            order = await client.place_bbo_order_with_retry(
+                symbol="BTCUSDT",
+                side="buy",
+                quantity=Decimal("0.001"),
+                tick_size=Decimal("0.1"),
+                max_retries=5,
+                fill_timeout_ms=500,
+                max_chase_percent=1.0,
+                position_side="LONG"
+            )
+            print(f"✅ Filled at ${order.average_price}")
+            
+        except BBORetryExhausted:
+            print("❌ Order not filled after all retries")
+            
+        except BBOPriceChaseExceeded:
+            print("⚠️ Price moved too far, stopped chasing")
+```
+
 ### `calculate_bbo_price()`
 
 Calculate BBO price without placing an order.
