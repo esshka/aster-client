@@ -482,25 +482,26 @@ async def create_trade(
         
         logger.info(f"📈 TP: {tp_price}, SL: ${sl_price}")
         
-        # Step 4: Place take profit order (TAKE_PROFIT_MARKET with closePosition=true)
+        # Step 4: Place take profit order (LIMIT with GTX for post-only maker order)
         if tp_price is not None:
             # For BUY entry (LONG position): SELL order to close with positionSide=LONG
             # For SELL entry (SHORT position): BUY order to close with positionSide=SHORT
             tp_side = "sell" if side.lower() == "buy" else "buy"
             
-            # When using closePosition, positionSide must match the position being closed
-            # NOT the order side. For a LONG position, we use SELL with positionSide=LONG
+            # When using reduceOnly, positionSide must match the position being closed
+            # For a LONG position, we use SELL with positionSide=LONG
             tp_position_side = position_side if position_side else ("LONG" if side.lower() == "buy" else "SHORT")
             
             tp_request = OrderRequest(
                 symbol=symbol,
                 side=tp_side,
-                order_type="take_profit_market",
-                quantity=Decimal("0"),  # Required by dataclass but will be ignored by API
-                stop_price=tp_price,  # Take profit trigger price
+                order_type="limit",
+                quantity=quantity,  # Same quantity as entry
+                price=tp_price,     # Limit price
+                time_in_force="GTX",  # Post-only (maker only)
                 position_side=tp_position_side,  # Position being closed
-                close_position=True,  # Close entire position when TP is hit
             )
+
             
             try:
                 tp_response = await client.place_order(tp_request)
@@ -513,6 +514,7 @@ async def create_trade(
             except Exception as e:
                 logger.error(f"❌ Failed to place TP order: {e}")
                 trade.take_profit_order.error = str(e)
+
         else:
              logger.info("ℹ️ TP percent is None, skipping TP order.")        
         # Step 5: Place stop loss order (STOP_MARKET with closePosition=true)

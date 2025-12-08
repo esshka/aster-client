@@ -111,8 +111,9 @@ async def create_trade_for_account(
         sl_percent=sl_percent,
         ticks_distance=0,       # Place at best bid/ask for highest fill priority
         max_retries=2,          # Retry up to 2 times if not filled
-        fill_timeout_ms=1000,   # Wait 1 second per attempt
+        fill_timeout_ms=5000,   # Wait 5 seconds per attempt
         max_chase_percent=0.1,  # Maximum 0.1% price chase
+
     )
     
     return account_id, trade
