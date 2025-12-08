@@ -6,8 +6,58 @@ receives trade configuration messages, and executes trades across multiple accou
 using the AccountPool and trades modules.
 
 Supported message types:
-- heartbeat: Connection verification messages from the publisher
-- trade: Trade execution commands with account details
+
+1. Heartbeat Message
+   Used to verify connection and system status.
+   {
+       "type": "heartbeat",
+       "status": "ready",          # Status string (e.g., "ready", "error")
+       "timestamp": "ISO8601",     # Current timestamp
+       "message": "...",           # Optional status message
+       "accounts_loaded": 10       # Number of loaded accounts
+   }
+
+2. Trade Command Message
+   Used to execute trades across configured accounts.
+   {
+       "type": "trade",            # Optional, default is "trade"
+       "symbol": "BTCUSDT",        # Trading pair symbol
+       "side": "buy",              # "buy" or "sell"
+       "tp_percent": 1.5,          # Optional: Take profit percentage (e.g., 1.5%), or null
+       "sl_percent": 0.5,          # Stop loss percentage (e.g., 0.5%)
+       "ticks_distance": 1,        # Optional (default: 1), BBO offset in ticks
+       "accounts": [               # List of accounts to execute on
+           {
+               "id": "acc_1",          # Account identifier
+               "api_key": "...",       # API key
+               "api_secret": "...",    # API secret
+               "quantity": 0.001,      # Order quantity for this account
+               "simulation": false     # Optional (default: false), use testnet/sim
+           }
+       ]
+   }
+
+3. Generic Order Message
+   Used to place single orders (Limit, Market, BBO) without TP/SL lifecycle.
+   {
+       "type": "order",
+       "symbol": "BTCUSDT",
+       "side": "buy",
+       "order_type": "limit",      # "limit", "market", "bbo", etc.
+       "price": 50000.0,           # Required for limit orders
+       "ticks_distance": 1,        # Required for BBO orders (default: 1)
+       "reduce_only": false,       # Optional
+       "time_in_force": "gtc",     # Optional
+       "position_side": "LONG",    # Optional (for hedge mode)
+       "accounts": [               # Same account structure as trade message
+           {
+               "id": "acc_1",
+               "api_key": "...",
+               "quantity": 0.001,
+               ...
+           }
+       ]
+   }
 """
 
 import asyncio
@@ -226,15 +276,24 @@ class ZMQTradeListener:
                 self._sanitize_account_info(acc) for acc in sanitized["accounts"]
             ]
         
-        # Log trade command details
-        logger.info(
-            f"Trade command - Symbol: {message.get('symbol', 'N/A')}, "
-            f"Side: {message.get('side', 'N/A')}, "
-            f"Accounts: {len(message.get('accounts', []))}, "
-            f"TP: {message.get('tp_percent', 'N/A')}%, "
-            f"SL: {message.get('sl_percent', 'N/A')}%, "
-            f"Ticks Distance: {message.get('ticks_distance', 1)}"
-        )
+        elif msg_type == "order":
+            # Log order command details
+            logger.info(
+                f"Order command - Symbol: {message.get('symbol', 'N/A')}, "
+                f"Side: {message.get('side', 'N/A')}, "
+                f"Type: {message.get('order_type', 'N/A')}, "
+                f"Accounts: {len(message.get('accounts', []))}"
+            )
+        else:
+            # Log trade command details (default)
+            logger.info(
+                f"Trade command - Symbol: {message.get('symbol', 'N/A')}, "
+                f"Side: {message.get('side', 'N/A')}, "
+                f"Accounts: {len(message.get('accounts', []))}, "
+                f"TP: {message.get('tp_percent', 'N/A')}%, "
+                f"SL: {message.get('sl_percent', 'N/A')}%, "
+                f"Ticks Distance: {message.get('ticks_distance', 1)}"
+            )
         
         # Log individual account details (sanitized)
         if "accounts" in message:
@@ -253,7 +312,8 @@ class ZMQTradeListener:
         Process a received trade command message.
         
         Args:
-            message: Decoded JSON message containing trade details and accounts
+            message: Decoded JSON message containing trade details and accounts.
+                     See module docstring for detailed message format specifications.
         """
         try:
             # Check if this is a heartbeat message
@@ -265,172 +325,331 @@ class ZMQTradeListener:
                 logger.debug("Heartbeat message processed successfully")
                 return
             
-            # Extract common trade parameters
-            symbol = message["symbol"]
-            side = message["side"]
-            tp_percent = float(message["tp_percent"])
-            sl_percent = float(message["sl_percent"])
-            ticks_distance = int(message.get("ticks_distance", 1))
-            
-            accounts_data = message.get("accounts", [])
-            if not accounts_data:
-                logger.warning("No accounts provided in message")
+            elif msg_type == "order":
+                await self._process_order_message(message)
                 return
-            
-            # Fetch market data
-            logger.info(f"Fetching market data for {symbol}...")
-            
-            # Try to get BBO from WebSocket cache first
-            bbo = self.bbo_calculator.get_bbo(symbol)
-            
-            if bbo:
-                best_bid, best_ask = bbo
-                logger.info(f"Using real-time BBO for {symbol}: Bid=${best_bid}, Ask=${best_ask}")
+
             else:
-                # Fallback to REST API if not in cache (e.g. startup)
-                logger.warning(f"BBO not in cache for {symbol}, falling back to REST API")
-                order_book = await self.public_client.get_order_book(symbol, limit=5)
-                if not order_book or "bids" not in order_book or "asks" not in order_book:
-                    logger.error(f"Failed to fetch order book for {symbol}")
-                    return
-                
-                try:
-                    best_bid = Decimal(order_book["bids"][0][0])
-                    best_ask = Decimal(order_book["asks"][0][0])
-                    logger.info(f"Market data fetched via REST: Bid=${best_bid}, Ask=${best_ask}")
-                except (IndexError, ValueError) as e:
-                    logger.error(f"Failed to parse order book for {symbol}: {e}")
-                    return
-            
-            # Get tick size from symbol info (should be cached from warmup)
-            symbol_info = await self.public_client.get_symbol_info(symbol)
-            if not symbol_info or not symbol_info.price_filter:
-                logger.error(f"Failed to fetch symbol info for {symbol}")
-                return
-            
-            tick_size = symbol_info.price_filter.tick_size
-            logger.info(f"Tick size fetched: {tick_size}")
-            
-            logger.info(
-                f"Starting trade execution - Symbol: {symbol}, Side: {side}, "
-                f"Accounts: {len(accounts_data)}, Bid: {best_bid}, Ask: {best_ask}, "
-                f"Tick Size: {tick_size}, TP: {tp_percent}%, SL: {sl_percent}%, "
-                f"Ticks Distance: {ticks_distance}"
-            )
-            
-            # Prepare account configurations
-            account_configs = []
-            quantities = {}
-            
-            for i, acc in enumerate(accounts_data, 1):
-                config = AccountConfig(
-                    id=acc["id"],
-                    api_key=acc["api_key"],
-                    api_secret=acc["api_secret"],
-                    simulation=acc.get("simulation", False)
-                )
-                account_configs.append(config)
-                quantities[acc["id"]] = Decimal(str(acc["quantity"]))
-                
-                # Log account setup (sanitized)
-                logger.info(
-                    f"Account {i}/{len(accounts_data)} configured - "
-                    f"ID: {acc['id']}, Quantity: {acc['quantity']}, "
-                    f"Simulation: {acc.get('simulation', False)}"
-                )
-            
-            logger.info(f"Initiating parallel trade execution for {len(account_configs)} accounts...")
-            
-            # Execute trades in parallel using AccountPool
-            async with AccountPool(account_configs) as pool:
-                
-                tasks = []
-                for acc_config in account_configs:
-                    client = pool.get_client(acc_config.id)
-                    if not client:
-                        logger.warning(f"Client not found for account {acc_config.id}")
-                        continue
-                        
-                    qty = quantities[acc_config.id]
-                    
-                    logger.debug(
-                        f"Creating trade task for account {acc_config.id} - "
-                        f"Symbol: {symbol}, Side: {side}, Qty: {qty}"
-                    )
-                    
-                    task = create_trade(
-                        client=client,
-                        symbol=symbol,
-                        side=side,
-                        quantity=qty,
-                        best_bid=best_bid,
-                        best_ask=best_ask,
-                        tick_size=tick_size,
-                        tp_percent=tp_percent,
-                        sl_percent=sl_percent,
-                        ticks_distance=ticks_distance
-                    )
-                    tasks.append(task)
-                
-                logger.info(f"Executing {len(tasks)} trade tasks in parallel...")
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                
-                # Log results
-                logger.info("Trade execution completed. Processing results...")
-                success_count = 0
-                failed_count = 0
-                
-                for i, res in enumerate(results):
-                    acc_id = account_configs[i].id
-                    
-                    if isinstance(res, Exception):
-                        failed_count += 1
-                        logger.error(
-                            f"Trade FAILED for account {acc_id} - Error: {type(res).__name__}: {res}",
-                            exc_info=res
-                        )
-                    else:
-                        if res.status.value in ["active", "entry_filled", "entry_placed"]:
-                            success_count += 1
-                            logger.info(
-                                f"Trade SUCCESS for account {acc_id} - "
-                                f"Trade ID: {res.trade_id}, Status: {res.status.value}, "
-                                f"Entry Order ID: {res.entry_order.order_id if res.entry_order else 'N/A'}"
-                            )
-                            
-                            # Log order details if available
-                            if res.entry_order:
-                                logger.info(
-                                    f"  Entry order placed - Account: {acc_id}, "
-                                    f"Order ID: {res.entry_order.order_id}, "
-                                    f"Price: {res.entry_order.price}, "
-                                    f"Size: {res.entry_order.size}"
-                                )
-                            if res.take_profit_order:
-                                logger.info(
-                                    f"  TP order placed - Account: {acc_id}, "
-                                    f"Order ID: {res.take_profit_order.order_id}, "
-                                    f"Price: {res.take_profit_order.price}"
-                                )
-                            if res.stop_loss_order:
-                                logger.info(
-                                    f"  SL order placed - Account: {acc_id}, "
-                                    f"Order ID: {res.stop_loss_order.order_id}, "
-                                    f"Price: {res.stop_loss_order.price}"
-                                )
-                        else:
-                            failed_count += 1
-                            logger.warning(
-                                f"Trade INCOMPLETE for account {acc_id} - "
-                                f"Trade ID: {res.trade_id}, Status: {res.status.value}"
-                            )
-                            
-                logger.info(
-                    f"Batch execution summary - Symbol: {symbol}, Side: {side}, "
-                    f"Total: {len(account_configs)}, Success: {success_count}, Failed: {failed_count}"
-                )
+                # Default to trade processing for backward compatibility or explicit "trade" type
+                await self._process_trade_message(message)
 
         except KeyError as e:
             logger.error(f"Missing required field in message: {e}", exc_info=True)
         except Exception as e:
             logger.error(f"Error processing message: {type(e).__name__}: {e}", exc_info=True)
+
+    async def _process_order_message(self, message: Dict[str, Any]):
+        """
+        Process a generic order placement message.
+        """
+        symbol = message["symbol"]
+        side = message["side"]
+        order_type = message["order_type"] 
+        accounts_data = message.get("accounts", [])
+        
+        if not accounts_data:
+            logger.warning("No accounts provided in order message")
+            return
+
+        # Fetch market data for BBO if needed
+        best_bid = None
+        best_ask = None
+        tick_size = Decimal("0") # Initialize default
+
+        if order_type.lower() == "bbo":
+             logger.info(f"Fetching market data for BBO order on {symbol}...")
+             # ... reused logic or simplified BBO fetching ...
+             # We need tick_size for BBO too.
+             # Actually, place_bbo_order in account_client needs tick_size.
+             # We should fetch symbol info regardless to be safe or if needed.
+             pass
+
+        # Fetch tick size if BBO or if we want to validate prices (good practice)
+        # For optimization, we only fetch if we really need it. BBO needs it.
+        if order_type.lower() == "bbo":
+             # Try to get BBO from WebSocket cache first
+            bbo = self.bbo_calculator.get_bbo(symbol)
+            if bbo:
+                best_bid, best_ask = bbo
+                logger.info(f"Using real-time BBO for {symbol}: Bid=${best_bid}, Ask=${best_ask}")
+            else:
+                # Fallback to REST API
+                order_book = await self.public_client.get_order_book(symbol, limit=5)
+                if order_book and "bids" in order_book and "asks" in order_book:
+                    best_bid = Decimal(order_book["bids"][0][0])
+                    best_ask = Decimal(order_book["asks"][0][0])
+                else:
+                    logger.error(f"Failed to fetch order book for {symbol}")
+                    return
+
+            symbol_info = await self.public_client.get_symbol_info(symbol)
+            if not symbol_info or not symbol_info.price_filter:
+                logger.error(f"Failed to fetch symbol info for {symbol}")
+                return
+            tick_size = symbol_info.price_filter.tick_size
+
+        
+        # Prepare execution tasks
+        logger.info(
+            f"Starting order batch execution - Symbol: {symbol}, Type: {order_type}, "
+            f"Side: {side}, Accounts: {len(accounts_data)}"
+        )
+
+        account_configs = []
+        quantities = {}
+        
+        for i, acc in enumerate(accounts_data, 1):
+            config = AccountConfig(
+                id=acc["id"],
+                api_key=acc["api_key"],
+                api_secret=acc["api_secret"],
+                simulation=acc.get("simulation", False)
+            )
+            account_configs.append(config)
+            quantities[acc["id"]] = Decimal(str(acc["quantity"]))
+
+        async with AccountPool(account_configs) as pool:
+            tasks = []
+            for acc_config in account_configs:
+                client = pool.get_client(acc_config.id)
+                if not client:
+                    continue
+                
+                qty = quantities[acc_config.id]
+                
+                if order_type.lower() == "bbo":
+                     # Special handling for BBO
+                     ticks_distance = int(message.get("ticks_distance", 1))
+                     task = client.place_bbo_order(
+                         symbol=symbol,
+                         side=side,
+                         quantity=qty,
+                         best_bid=best_bid,
+                         best_ask=best_ask,
+                         tick_size=tick_size,
+                         ticks_distance=ticks_distance,
+                         time_in_force=message.get("time_in_force", "gtc"),
+                         client_order_id=message.get("client_order_id"),
+                         position_side=message.get("position_side")
+                     )
+                else:
+                    # Standard order types (LIMIT, MARKET, etc.)
+                    from .models.orders import OrderRequest
+                    
+                    price = None
+                    if "price" in message and message["price"] is not None:
+                        price = Decimal(str(message["price"]))
+                        
+                    stop_price = None
+                    if "stop_price" in message and message["stop_price"] is not None:
+                         stop_price = Decimal(str(message["stop_price"]))
+
+                    req = OrderRequest(
+                        symbol=symbol,
+                        side=side,
+                        order_type=order_type,
+                        quantity=qty,
+                        price=price,
+                        stop_price=stop_price,
+                        time_in_force=message.get("time_in_force"),
+                        reduce_only=message.get("reduce_only"),
+                        position_side=message.get("position_side"),
+                        client_order_id=message.get("client_order_id"),
+                    )
+                    task = client.place_order(req)
+                
+                tasks.append(task)
+
+            # Execute
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Log results
+            success = 0
+            failed = 0
+            for i, res in enumerate(results):
+                acc_id = account_configs[i].id
+                if isinstance(res, Exception):
+                    failed += 1
+                    logger.error(f"Order failed for {acc_id}: {res}")
+                else:
+                    success += 1
+                    logger.info(f"Order success for {acc_id}: ID={res.order_id}, Status={res.status}")
+            
+            logger.info(f"Order batch completed: {success} ok, {failed} failed")
+
+
+    async def _process_trade_message(self, message: Dict[str, Any]):
+        """
+        Process a standard trade lifecycle message (Entry + TP/SL).
+        Target of refactoring from original process_message.
+        """
+        # Extract common trade parameters
+        symbol = message["symbol"]
+        side = message["side"]
+        
+        tp_percent_raw = message.get("tp_percent")
+        tp_percent = float(tp_percent_raw) if tp_percent_raw is not None else None
+        
+        sl_percent = float(message["sl_percent"])
+        ticks_distance = int(message.get("ticks_distance", 1))
+        
+        accounts_data = message.get("accounts", [])
+        if not accounts_data:
+            logger.warning("No accounts provided in message")
+            return
+        
+        # Fetch market data
+        logger.info(f"Fetching market data for {symbol}...")
+        
+        # Try to get BBO from WebSocket cache first
+        bbo = self.bbo_calculator.get_bbo(symbol)
+        
+        if bbo:
+            best_bid, best_ask = bbo
+            logger.info(f"Using real-time BBO for {symbol}: Bid=${best_bid}, Ask=${best_ask}")
+        else:
+            # Fallback to REST API if not in cache (e.g. startup)
+            logger.warning(f"BBO not in cache for {symbol}, falling back to REST API")
+            order_book = await self.public_client.get_order_book(symbol, limit=5)
+            if not order_book or "bids" not in order_book or "asks" not in order_book:
+                logger.error(f"Failed to fetch order book for {symbol}")
+                return
+            
+            try:
+                best_bid = Decimal(order_book["bids"][0][0])
+                best_ask = Decimal(order_book["asks"][0][0])
+                logger.info(f"Market data fetched via REST: Bid=${best_bid}, Ask=${best_ask}")
+            except (IndexError, ValueError) as e:
+                logger.error(f"Failed to parse order book for {symbol}: {e}")
+                return
+        
+        # Get tick size from symbol info (should be cached from warmup)
+        symbol_info = await self.public_client.get_symbol_info(symbol)
+        if not symbol_info or not symbol_info.price_filter:
+            logger.error(f"Failed to fetch symbol info for {symbol}")
+            return
+        
+        tick_size = symbol_info.price_filter.tick_size
+        logger.info(f"Tick size fetched: {tick_size}")
+        
+        tp_desc = f"{tp_percent}%" if tp_percent is not None else "None"
+        logger.info(
+            f"Starting trade execution - Symbol: {symbol}, Side: {side}, "
+            f"Accounts: {len(accounts_data)}, Bid: {best_bid}, Ask: {best_ask}, "
+            f"Tick Size: {tick_size}, TP: {tp_desc}, SL: {sl_percent}%, "
+            f"Ticks Distance: {ticks_distance}"
+        )
+        
+        # Prepare account configurations
+        account_configs = []
+        quantities = {}
+        
+        for i, acc in enumerate(accounts_data, 1):
+            config = AccountConfig(
+                id=acc["id"],
+                api_key=acc["api_key"],
+                api_secret=acc["api_secret"],
+                simulation=acc.get("simulation", False)
+            )
+            account_configs.append(config)
+            quantities[acc["id"]] = Decimal(str(acc["quantity"]))
+            
+            # Log account setup (sanitized)
+            logger.info(
+                f"Account {i}/{len(accounts_data)} configured - "
+                f"ID: {acc['id']}, Quantity: {acc['quantity']}, "
+                f"Simulation: {acc.get('simulation', False)}"
+            )
+        
+        logger.info(f"Initiating parallel trade execution for {len(account_configs)} accounts...")
+        
+        # Execute trades in parallel using AccountPool
+        async with AccountPool(account_configs) as pool:
+            
+            tasks = []
+            for acc_config in account_configs:
+                client = pool.get_client(acc_config.id)
+                if not client:
+                    logger.warning(f"Client not found for account {acc_config.id}")
+                    continue
+                    
+                qty = quantities[acc_config.id]
+                
+                logger.debug(
+                    f"Creating trade task for account {acc_config.id} - "
+                    f"Symbol: {symbol}, Side: {side}, Qty: {qty}"
+                )
+                
+                task = create_trade(
+                    client=client,
+                    symbol=symbol,
+                    side=side,
+                    quantity=qty,
+                    best_bid=best_bid,
+                    best_ask=best_ask,
+                    tick_size=tick_size,
+                    tp_percent=tp_percent,
+                    sl_percent=sl_percent,
+                    ticks_distance=ticks_distance
+                )
+                tasks.append(task)
+            
+            logger.info(f"Executing {len(tasks)} trade tasks in parallel...")
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Log results
+            logger.info("Trade execution completed. Processing results...")
+            success_count = 0
+            failed_count = 0
+            
+            for i, res in enumerate(results):
+                acc_id = account_configs[i].id
+                
+                if isinstance(res, Exception):
+                    failed_count += 1
+                    logger.error(
+                        f"Trade FAILED for account {acc_id} - Error: {type(res).__name__}: {res}",
+                        exc_info=res
+                    )
+                else:
+                    if res.status.value in ["active", "entry_filled", "entry_placed"]:
+                        success_count += 1
+                        logger.info(
+                            f"Trade SUCCESS for account {acc_id} - "
+                            f"Trade ID: {res.trade_id}, Status: {res.status.value}, "
+                            f"Entry Order ID: {res.entry_order.order_id if res.entry_order else 'N/A'}"
+                        )
+                        
+                        # Log order details if available
+                        if res.entry_order:
+                            logger.info(
+                                f"  Entry order placed - Account: {acc_id}, "
+                                f"Order ID: {res.entry_order.order_id}, "
+                                f"Price: {res.entry_order.price}, "
+                                f"Size: {res.entry_order.size}"
+                            )
+                        if res.take_profit_order:
+                            logger.info(
+                                f"  TP order placed - Account: {acc_id}, "
+                                f"Order ID: {res.take_profit_order.order_id}, "
+                                f"Price: {res.take_profit_order.price}"
+                            )
+                        if res.stop_loss_order:
+                            logger.info(
+                                f"  SL order placed - Account: {acc_id}, "
+                                f"Order ID: {res.stop_loss_order.order_id}, "
+                                f"Price: {res.stop_loss_order.price}"
+                            )
+                    else:
+                        failed_count += 1
+                        logger.warning(
+                            f"Trade INCOMPLETE for account {acc_id} - "
+                            f"Trade ID: {res.trade_id}, Status: {res.status.value}"
+                        )
+                        
+            logger.info(
+                f"Batch execution summary - Symbol: {symbol}, Side: {side}, "
+                f"Total: {len(account_configs)}, Success: {success_count}, Failed: {failed_count}"
+            )
+
+

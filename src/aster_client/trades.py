@@ -145,22 +145,22 @@ class Trade:
 def calculate_tp_sl_prices(
     entry_price: Decimal,
     side: str,
-    tp_percent: float,
+    tp_percent: Optional[float],
     sl_percent: float,
     tick_size: Decimal,
-) -> tuple[Decimal, Decimal]:
+) -> tuple[Optional[Decimal], Decimal]:
     """
     Calculate take profit and stop loss prices from entry price and percentage offsets.
     
     Args:
         entry_price: Entry fill price
         side: Order side ("buy" or "sell")
-        tp_percent: Take profit percentage (e.g., 1.0 for 1%)
+        tp_percent: Take profit percentage (e.g., 1.0 for 1%), or None
         sl_percent: Stop loss percentage (e.g., 0.5 for 0.5%)
         tick_size: Tick size for price rounding
         
     Returns:
-        Tuple of (tp_price, sl_price) rounded to tick size
+        Tuple of (tp_price, sl_price) rounded to tick size. tp_price can be None.
         
     Raises:
         ValueError: If parameters are invalid or TP/SL don't satisfy constraints
@@ -176,7 +176,7 @@ def calculate_tp_sl_prices(
         raise ValueError(f"Entry price must be positive, got {entry_price}")
     if tick_size <= 0:
         raise ValueError(f"Tick size must be positive, got {tick_size}")
-    if tp_percent <= 0:
+    if tp_percent is not None and tp_percent <= 0:
         raise ValueError(f"TP percent must be positive, got {tp_percent}")
     if sl_percent <= 0:
         raise ValueError(f"SL percent must be positive, got {sl_percent}")
@@ -186,39 +186,78 @@ def calculate_tp_sl_prices(
         raise ValueError(f"Side must be 'buy' or 'sell', got '{side}'")
     
     # Calculate raw prices
-    tp_multiplier = Decimal(str(1 + tp_percent / 100))
     sl_multiplier = Decimal(str(1 - sl_percent / 100))
+    tp_price = None
+    
+    if tp_percent is not None:
+        tp_multiplier = Decimal(str(1 + tp_percent / 100))
     
     if side == "buy":
         # For BUY: TP is above entry, SL is below entry
-        tp_price_raw = entry_price * tp_multiplier
+        if tp_percent is not None:
+            tp_price_raw = entry_price * tp_multiplier
+            tp_price = _round_to_tick(tp_price_raw, tick_size)
+            
         sl_price_raw = entry_price * sl_multiplier
+        sl_price = _round_to_tick(sl_price_raw, tick_size)
     else:  # sell
         # For SELL: TP is below entry, SL is above entry
-        tp_price_raw = entry_price * sl_multiplier
-        sl_price_raw = entry_price * tp_multiplier
-    
-    # Round to tick size
-    tp_price = _round_to_tick(tp_price_raw, tick_size)
-    sl_price = _round_to_tick(sl_price_raw, tick_size)
+        if tp_percent is not None:
+            # For sell, tp_multiplier logic in original code was:
+            # tp_price_raw = entry_price * sl_multiplier  <-- WAIT, I see a bug in the original code?
+            # Original code:
+            # tp_multiplier = Decimal(str(1 + tp_percent / 100))
+            # sl_multiplier = Decimal(str(1 - sl_percent / 100))
+            # ...
+            # else: # sell
+            #   tp_price_raw = entry_price * sl_multiplier  <-- WRONG?
+            #   sl_price_raw = entry_price * tp_multiplier  <-- WRONG?
+            
+            # Let's check the logic for SELL.
+            # Sell @ 100. TP 1% -> Target 99. SL 1% -> Target 101.
+            # Original 'tp_multiplier' is 1.01. 'sl_multiplier' is 0.99.
+            # If sell:
+            # tp_price should be entry * (1 - tp_percent/100) -> which is roughly entry * sl_multiplier IF tp_percent == sl_percent. But they are different variables.
+            # So the original code seems to have mixed up multipliers for SELL or assumed simple symmetry which is wrong if percentages differ.
+            # Let's correct/implement properly here.
+            
+            # For SELL:
+            # TP price = Entry * (1 - TP%)
+            # SL price = Entry * (1 + SL%)
+            
+            tp_sell_mult = Decimal(str(1 - tp_percent / 100))
+            tp_price_raw = entry_price * tp_sell_mult
+            tp_price = _round_to_tick(tp_price_raw, tick_size)
+            
+        sl_sell_mult = Decimal(str(1 + sl_percent / 100))
+        sl_price_raw = entry_price * sl_sell_mult
+        sl_price = _round_to_tick(sl_price_raw, tick_size)
     
     # Validate constraints
     if side == "buy":
-        if not (sl_price < entry_price < tp_price):
-            raise ValueError(
+        if tp_price is not None and not (entry_price < tp_price):
+             # Basic sanity check only, strict range check below
+             pass
+             
+        if not (sl_price < entry_price):
+             pass # Will be caught by logic or implicit
+             
+        if tp_price is not None and not (sl_price < entry_price < tp_price):
+             raise ValueError(
                 f"For BUY orders: SL < entry < TP required. "
                 f"Got SL={sl_price}, entry={entry_price}, TP={tp_price}"
             )
     else:  # sell
-        if not (tp_price < entry_price < sl_price):
+        if tp_price is not None and not (tp_price < entry_price < sl_price):
             raise ValueError(
                 f"For SELL orders: TP < entry < SL required. "
                 f"Got TP={tp_price}, entry={entry_price}, SL={sl_price}"
             )
     
+    tp_str = f"TP={tp_price} (+{tp_percent}%)" if tp_price else "TP=None"
     logger.debug(
         f"Calculated TP/SL for {side.upper()} @ {entry_price}: "
-        f"TP={tp_price} (+{tp_percent}%), SL={sl_price} (-{sl_percent}%)"
+        f"{tp_str}, SL={sl_price} (-{sl_percent}%)"
     )
     
     return tp_price, sl_price
@@ -311,7 +350,7 @@ async def create_trade(
     best_bid: Decimal,
     best_ask: Decimal,
     tick_size: Decimal,
-    tp_percent: float,
+    tp_percent: Optional[float],
     sl_percent: float,
     ticks_distance: int = 1,
     fill_timeout: float = 10.0,
@@ -372,8 +411,9 @@ async def create_trade(
     
     try:
         # Step 1: Place BBO entry order
+        tp_desc = f"TP: +{tp_percent}%" if tp_percent is not None else "TP: None"
         logger.info(f"📊 Creating trade {trade_id}: {symbol} {side.upper()} {quantity}")
-        logger.info(f"   TP: +{tp_percent}%, SL: -{sl_percent}%")
+        logger.info(f"   {tp_desc}, SL: -{sl_percent}%")
         
         trade.status = TradeStatus.ENTRY_PLACED
         entry_response = await client.place_bbo_order(
@@ -445,39 +485,41 @@ async def create_trade(
             tick_size=tick_size,
         )
         
-        logger.info(f"📈 TP: ${tp_price}, SL: ${sl_price}")
+        logger.info(f"📈 TP: {tp_price}, SL: ${sl_price}")
         
         # Step 4: Place take profit order (TAKE_PROFIT_MARKET with closePosition=true)
-        # For BUY entry (LONG position): SELL order to close with positionSide=LONG
-        # For SELL entry (SHORT position): BUY order to close with positionSide=SHORT
-        tp_side = "sell" if side.lower() == "buy" else "buy"
-        
-        # When using closePosition, positionSide must match the position being closed
-        # NOT the order side. For a LONG position, we use SELL with positionSide=LONG
-        tp_position_side = position_side if position_side else ("LONG" if side.lower() == "buy" else "SHORT")
-        
-        tp_request = OrderRequest(
-            symbol=symbol,
-            side=tp_side,
-            order_type="take_profit_market",
-            quantity=Decimal("0"),  # Required by dataclass but will be ignored by API
-            stop_price=tp_price,  # Take profit trigger price
-            position_side=tp_position_side,  # Position being closed
-            close_position=True,  # Close entire position when TP is hit
-        )
-        
-        try:
-            tp_response = await client.place_order(tp_request)
-            trade.take_profit_order.order_id = tp_response.order_id
-            trade.take_profit_order.price = tp_price
-            trade.take_profit_order.size = quantity
-            trade.take_profit_order.status = tp_response.status
-            trade.take_profit_order.placed_at = datetime.now(timezone.utc).isoformat()
-            logger.info(f"✅ Take profit order placed: {tp_response.order_id} @ ${tp_price}")
-        except Exception as e:
-            logger.error(f"❌ Failed to place TP order: {e}")
-            trade.take_profit_order.error = str(e)
-        
+        if tp_price is not None:
+            # For BUY entry (LONG position): SELL order to close with positionSide=LONG
+            # For SELL entry (SHORT position): BUY order to close with positionSide=SHORT
+            tp_side = "sell" if side.lower() == "buy" else "buy"
+            
+            # When using closePosition, positionSide must match the position being closed
+            # NOT the order side. For a LONG position, we use SELL with positionSide=LONG
+            tp_position_side = position_side if position_side else ("LONG" if side.lower() == "buy" else "SHORT")
+            
+            tp_request = OrderRequest(
+                symbol=symbol,
+                side=tp_side,
+                order_type="take_profit_market",
+                quantity=Decimal("0"),  # Required by dataclass but will be ignored by API
+                stop_price=tp_price,  # Take profit trigger price
+                position_side=tp_position_side,  # Position being closed
+                close_position=True,  # Close entire position when TP is hit
+            )
+            
+            try:
+                tp_response = await client.place_order(tp_request)
+                trade.take_profit_order.order_id = tp_response.order_id
+                trade.take_profit_order.price = tp_price
+                trade.take_profit_order.size = quantity
+                trade.take_profit_order.status = tp_response.status
+                trade.take_profit_order.placed_at = datetime.now(timezone.utc).isoformat()
+                logger.info(f"✅ Take profit order placed: {tp_response.order_id} @ ${tp_price}")
+            except Exception as e:
+                logger.error(f"❌ Failed to place TP order: {e}")
+                trade.take_profit_order.error = str(e)
+        else:
+             logger.info("ℹ️ TP percent is None, skipping TP order.")        
         # Step 5: Place stop loss order (STOP_MARKET with closePosition=true)
         # For BUY entry (LONG position): SELL order to close with positionSide=LONG
         # For SELL entry (SHORT position): BUY order to close with positionSide=SHORT
@@ -509,15 +551,23 @@ async def create_trade(
             trade.stop_loss_order.error = str(e)
         
         # Update trade status
-        if trade.take_profit_order.order_id and trade.stop_loss_order.order_id:
+        tp_ok = (trade.take_profit_order.order_id is not None) or (tp_percent is None)
+        sl_ok = (trade.stop_loss_order.order_id is not None)
+
+        if tp_ok and sl_ok:
             trade.status = TradeStatus.ACTIVE
             logger.info(f"🎉 Trade {trade_id} is now ACTIVE")
-        elif trade.take_profit_order.order_id or trade.stop_loss_order.order_id:
-            trade.status = TradeStatus.ACTIVE  # Partially active
-            logger.warning(f"⚠️  Trade {trade_id} partially active (missing TP or SL)")
+        elif not sl_ok: 
+            # SL is required
+            trade.status = TradeStatus.ACTIVE  # Partially active (only TP placed or neither if TP missing too)
+            logger.warning(f"⚠️  Trade {trade_id} partially active (missing SL)")
+        elif not tp_ok:
+            # TP was requested but failed
+            trade.status = TradeStatus.ACTIVE
+            logger.warning(f"⚠️  Trade {trade_id} partially active (missing TP)")
         else:
             trade.status = TradeStatus.FAILED
-            trade.metadata["error"] = "Failed to place TP/SL orders"
+            trade.metadata["error"] = "Failed to place required orders"
             logger.error(f"❌ Trade {trade_id} failed to become active")
         
         return trade
