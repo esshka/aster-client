@@ -109,17 +109,27 @@ The trades module provides a high-level abstraction for managing complete trades
 import asyncio
 from decimal import Decimal
 from aster_client import AsterClient, create_trade
+from aster_client.public_client import AsterPublicClient
 
 async def create_automated_trade():
-    async with AsterClient.from_env() as client:
+    async with AsterClient.from_env() as client, AsterPublicClient() as public_client:
+        # Get order book for best bid/ask
+        order_book = await public_client.get_order_book("ETHUSDT", limit=5)
+        best_bid = Decimal(str(order_book["bids"][0][0]))
+        best_ask = Decimal(str(order_book["asks"][0][0]))
+        
+        symbol_info = await public_client.get_symbol_info("ETHUSDT")
+        tick_size = symbol_info.price_filter.tick_size
+        
         # Create a complete trade with TP and SL
         trade = await create_trade(
             client=client,
             symbol="ETHUSDT",
             side="buy",  # or "sell"
             quantity=Decimal("0.1"),
-            market_price=Decimal("3000.0"),
-            tick_size=Decimal("0.01"),
+            best_bid=best_bid,
+            best_ask=best_ask,
+            tick_size=tick_size,
             tp_percent=1.0,  # 1% take profit
             sl_percent=0.5,  # 0.5% stop loss
             fill_timeout=10.0,  # Wait 10s for entry fill (default)

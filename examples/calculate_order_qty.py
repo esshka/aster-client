@@ -9,8 +9,8 @@ def round_step_size(quantity: Decimal, step_size: Decimal) -> Decimal:
     return (quantity // step_size) * step_size
 
 async def main():
-    symbol = "BTCUSDT"
-    target_notional = Decimal("500")  # 500 USDT
+    symbol = "SOLUSDT"
+    target_notional = Decimal("20")  # 20 USDT
 
     print(f"--- Calculating Order Quantity for {symbol} ---")
     print(f"Target Notional: {target_notional} USDT")

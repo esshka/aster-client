@@ -2,13 +2,17 @@ import zmq
 import json
 import time
 import random
+import os
+from dotenv import load_dotenv
 
 def main():
+    load_dotenv()
+    port = os.getenv("ZMQ_PORT", "5555")
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
-    socket.bind("tcp://*:5555")
+    socket.bind(f"tcp://*:{port}")
     
-    print("ZMQ Publisher started on tcp://*:5555")
+    print(f"ZMQ Publisher started on tcp://*:{port}")
     print("Waiting for subscribers...")
     time.sleep(1)  # Allow time for connection
     

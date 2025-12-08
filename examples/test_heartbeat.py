@@ -4,6 +4,8 @@ Test script to verify heartbeat message handling in zmq_listener.
 
 import asyncio
 import logging
+import os
+from dotenv import load_dotenv
 from aster_client.zmq_listener import ZMQTradeListener
 
 # Configure logging
@@ -15,8 +17,10 @@ logging.basicConfig(
 async def test_heartbeat_processing():
     """Test that heartbeat messages are processed correctly."""
     
+    load_dotenv()
+    zmq_url = os.getenv("ZMQ_URL", "tcp://127.0.0.1:5555")
     # Create a listener instance
-    listener = ZMQTradeListener(zmq_url="tcp://127.0.0.1:5555", log_dir="logs/test")
+    listener = ZMQTradeListener(zmq_url=zmq_url, log_dir="logs/test")
     
     # Test heartbeat message
     heartbeat_message = {

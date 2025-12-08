@@ -9,10 +9,9 @@ This example demonstrates how to:
 4. Calculate BBO prices for buy and sell orders
 5. Place a BBO order with automatic price calculation
 
-BBO orders are placed one tick away from market price to maximize
-the chance of maker fee execution while getting optimal pricing:
-- BUY orders: market_price + tick_size
-- SELL orders: market_price - tick_size
+BBO orders are placed N ticks AWAY from the spread to ensure maker fees:
+- BUY orders: best_bid - tick_size (below best bid = maker)
+- SELL orders: best_ask + tick_size (above best ask = maker)
 
 Prerequisites:
 - Set ASTER_API_KEY and ASTER_API_SECRET environment variables
@@ -55,8 +54,8 @@ async def main():
     """Main function to demonstrate BBO order placement."""
 
     # Configuration
-    SYMBOL = "BTCUSDT"
-    QUANTITY = Decimal("0.001")  # 0.001 BTC
+    SYMBOL = "SOLUSDT"
+    QUANTITY = Decimal("0.05")  # 0.05 SOL
     SIDE = "buy"  # "buy" or "sell"
     TICKS_DISTANCE = 1  # Number of ticks away from market price (default: 1)
     # TICKS_DISTANCE = 2 would place order 2 ticks away from market
@@ -80,16 +79,21 @@ async def main():
             return
 
         async with public_client, client:
-            # Step 1: Get current mark price
-            logger.info(f"Getting current mark price for {SYMBOL}...")
-            ticker = await public_client.get_ticker(SYMBOL)
+            # Step 1: Get order book for best bid/ask
+            logger.info(f"Getting order book for {SYMBOL}...")
+            order_book = await public_client.get_order_book(SYMBOL, limit=5)
             
-            if not ticker:
-                logger.error(f"Failed to get ticker for {SYMBOL}")
+            if not order_book or "bids" not in order_book or "asks" not in order_book:
+                logger.error(f"Failed to get order book for {SYMBOL}")
                 return
 
-            market_price = Decimal(str(ticker.get("markPrice", 0)))
-            logger.info(f"📊 Current market price: ${market_price}")
+            try:
+                best_bid = Decimal(order_book["bids"][0][0])
+                best_ask = Decimal(order_book["asks"][0][0])
+                logger.info(f"📊 Current market: Bid=${best_bid}, Ask=${best_ask}")
+            except (IndexError, ValueError) as e:
+                logger.error(f"Failed to parse order book: {e}")
+                return
 
             # Step 2: Get symbol info for tick size
             logger.info(f"Getting symbol information for {SYMBOL}...")
@@ -112,20 +116,21 @@ async def main():
             logger.info("=" * 60)
 
             buy_bbo_price = calculate_bbo_price(
-                SYMBOL, "buy", market_price, tick_size, TICKS_DISTANCE
+                SYMBOL, "buy", best_bid, best_ask, tick_size, TICKS_DISTANCE
             )
             sell_bbo_price = calculate_bbo_price(
-                SYMBOL, "sell", market_price, tick_size, TICKS_DISTANCE
+                SYMBOL, "sell", best_bid, best_ask, tick_size, TICKS_DISTANCE
             )
 
             price_adjustment = tick_size * TICKS_DISTANCE
             logger.info(
-                f"BUY BBO Price:  ${buy_bbo_price} (market + {TICKS_DISTANCE} tick{'s' if TICKS_DISTANCE > 1 else ''} = +${price_adjustment})"
+                f"BUY BBO Price:  ${buy_bbo_price} (bid - {TICKS_DISTANCE} tick{'s' if TICKS_DISTANCE > 1 else ''} = -${price_adjustment}) [maker: below bid]"
             )
             logger.info(
-                f"SELL BBO Price: ${sell_bbo_price} (market - {TICKS_DISTANCE} tick{'s' if TICKS_DISTANCE > 1 else ''} = -${price_adjustment})"
+                f"SELL BBO Price: ${sell_bbo_price} (ask + {TICKS_DISTANCE} tick{'s' if TICKS_DISTANCE > 1 else ''} = +${price_adjustment}) [maker: above ask]"
             )
             logger.info("=" * 60)
+
 
             # Step 4: Get account information
             logger.info("\nRetrieving account information...")
@@ -142,7 +147,8 @@ async def main():
                 symbol=SYMBOL,
                 side=SIDE,
                 quantity=QUANTITY,
-                market_price=market_price,
+                best_bid=best_bid,
+                best_ask=best_ask,
                 tick_size=tick_size,
                 ticks_distance=TICKS_DISTANCE,
                 time_in_force="gtc",
@@ -159,14 +165,15 @@ async def main():
             logger.info(f"   Type: {order_result.order_type}")
             logger.info(f"   Quantity: {order_result.quantity}")
             logger.info(f"   BBO Price: ${order_result.price}")
-            logger.info(f"   Market Price: ${market_price}")
             
             if SIDE == "buy":
-                price_diff = order_result.price - market_price
-                logger.info(f"   Price Improvement: +${price_diff} (more favorable for maker)")
+                logger.info(f"   Best Bid: ${best_bid}")
+                price_diff = order_result.price - best_bid
+                logger.info(f"   Price Improvement: +${price_diff} (vs Best Bid)")
             else:
-                price_diff = market_price - order_result.price
-                logger.info(f"   Price Improvement: +${price_diff} (more favorable for maker)")
+                logger.info(f"   Best Ask: ${best_ask}")
+                price_diff = best_ask - order_result.price
+                logger.info(f"   Price Improvement: +${price_diff} (vs Best Ask)")
             
             logger.info("=" * 60)
 

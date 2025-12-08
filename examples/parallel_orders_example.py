@@ -3,17 +3,17 @@
 Example: Parallel Order Execution with AccountPool
 
 This example demonstrates how to:
-1. Create an AccountPool with multiple accounts
+1. Load multiple accounts from accounts_config.yml
 2. Get account information for all accounts in parallel
-3. Place orders across multiple accounts simultaneously
+3. Place orders across multiple accounts simultaneously (DEMO MODE ONLY)
 4. Handle results and errors gracefully
 5. Measure performance improvement vs sequential execution
 
+⚠️  IMPORTANT: This example runs in DEMO MODE by default and will NOT place real orders.
+    To enable real trading, set ENABLE_REAL_TRADING=True (NOT RECOMMENDED for examples)
+
 Prerequisites:
-- Set environment variables for multiple accounts:
-  ACCOUNT_1_API_KEY, ACCOUNT_1_API_SECRET
-  ACCOUNT_2_API_KEY, ACCOUNT_2_API_SECRET
-  etc.
+- Create accounts_config.yml in the project root (see accounts_config.example.yml)
 - Install dependencies: poetry install
 
 Usage:
@@ -22,12 +22,15 @@ Usage:
 
 import asyncio
 import os
+import sys
 import time
 from decimal import Decimal
-from dotenv import load_dotenv
+from pathlib import Path
+import yaml
 import logging
 
-load_dotenv()
+# Add parent directory to path for local development
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from aster_client import AccountPool, AccountConfig, OrderRequest
 from aster_client.public_client import AsterPublicClient
@@ -39,28 +42,44 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ⚠️  SAFETY FLAG - Set to True to enable real trading (NOT RECOMMENDED)
+ENABLE_REAL_TRADING = False
 
-def load_accounts_from_env() -> list[AccountConfig]:
-    """Load account configurations from environment variables."""
-    accounts = []
-    i = 1
+
+def load_accounts_from_config(config_path: str) -> list[AccountConfig]:
+    """Load account configurations from YAML file."""
+    config_file = Path(config_path)
     
-    while True:
-        api_key = os.getenv(f"ACCOUNT_{i}_API_KEY")
-        api_secret = os.getenv(f"ACCOUNT_{i}_API_SECRET")
-        
-        if not api_key or not api_secret:
-            break
-        
-        accounts.append(
-            AccountConfig(
-                id=f"account_{i}",
-                api_key=api_key,
-                api_secret=api_secret,
-                simulation=os.getenv(f"ACCOUNT_{i}_SIMULATION", "false").lower() == "true"
-            )
+    if not config_file.exists():
+        raise FileNotFoundError(
+            f"Configuration file not found: {config_path}\n"
+            f"Please create {config_path} based on accounts_config.example.yml"
         )
-        i += 1
+    
+    with open(config_file, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    if not config or 'accounts' not in config:
+        raise ValueError(
+            f"Invalid configuration file: {config_path}\n"
+            "Expected 'accounts' key with list of account configurations"
+        )
+    
+    accounts = []
+    for acc_data in config['accounts']:
+        if not all(k in acc_data for k in ['id', 'api_key', 'api_secret']):
+            raise ValueError(
+                f"Invalid account configuration: {acc_data}\n"
+                "Each account must have 'id', 'api_key', and 'api_secret'"
+            )
+        
+        accounts.append(AccountConfig(
+            id=acc_data['id'],
+            api_key=acc_data['api_key'],
+            api_secret=acc_data['api_secret'],
+            simulation=acc_data.get('simulation', False),
+            recv_window=acc_data.get('recv_window', 10000),
+        ))
     
     return accounts
 
@@ -83,7 +102,7 @@ async def demonstrate_parallel_account_info(pool: AccountPool):
             info = result.result
             logger.info(f"📊 {result.account_id}:")
             logger.info(f"   Status: {info.status}")
-            logger.info(f"   Balance: ${info.cash}")
+            logger.info(f"   Cash: ${info.cash}")
             logger.info(f"   Buying Power: ${info.buying_power}")
         else:
             logger.error(f"❌ {result.account_id}: {result.error}")
@@ -100,17 +119,19 @@ async def demonstrate_parallel_positions(pool: AccountPool):
     for result in results:
         if result.success:
             positions = result.result
-            logger.info(f"\n📈 {result.account_id}: {len(positions)} position(s)")
-            for pos in positions:
-                logger.info(f"   {pos.symbol}: {pos.position_amount} @ ${pos.entry_price}")
+            # Filter out empty positions
+            non_empty_positions = [p for p in positions if p.quantity != Decimal("0")]
+            logger.info(f"\n📈 {result.account_id}: {len(non_empty_positions)} open position(s)")
+            for pos in non_empty_positions:
+                logger.info(f"   {pos.symbol}: {pos.quantity} @ ${pos.avg_entry_price}")
         else:
             logger.error(f"❌ {result.account_id}: {result.error}")
 
 
 async def demonstrate_parallel_order_placement(pool: AccountPool):
-    """Demonstrate parallel order placement."""
+    """Demonstrate parallel order placement (DEMO MODE - shows what WOULD happen)."""
     logger.info("\n" + "=" * 70)
-    logger.info("DEMO 3: Parallel Order Placement")
+    logger.info("DEMO 3: Parallel Order Placement (SIMULATION)")
     logger.info("=" * 70)
     
     # Configuration
@@ -129,39 +150,51 @@ async def demonstrate_parallel_order_placement(pool: AccountPool):
         time_in_force="gtc",
     )
     
-    logger.info(f"\n🎯 Placing {SIDE.upper()} orders for {QUANTITY} {SYMBOL} @ ${PRICE}")
-    logger.info(f"   Executing across {pool.account_count} accounts in parallel...\n")
+    logger.info(f"\n🎯 DEMO: Would place {SIDE.upper()} orders for {QUANTITY} {SYMBOL} @ ${PRICE}")
+    logger.info(f"   Across {pool.account_count} accounts in parallel")
     
-    start_time = time.time()
-    results = await pool.place_orders_parallel(order)
-    duration = time.time() - start_time
-    
-    logger.info(f"✅ Order placement completed in {duration:.2f}s")
-    logger.info(f"   (Average: {duration/len(results):.2f}s per account)\n")
-    
-    # Process results
-    success_count = 0
-    failure_count = 0
-    
-    for result in results:
-        if result.success:
-            success_count += 1
-            order_response = result.result
-            logger.info(f"✅ {result.account_id}:")
-            logger.info(f"   Order ID: {order_response.order_id}")
-            logger.info(f"   Status: {order_response.status}")
-            logger.info(f"   Price: ${order_response.price}")
-        else:
-            failure_count += 1
-            logger.error(f"❌ {result.account_id}: {result.error}")
-    
-    logger.info(f"\n📊 Summary: {success_count} succeeded, {failure_count} failed")
+    if ENABLE_REAL_TRADING:
+        logger.warning("\n⚠️  REAL TRADING ENABLED - Placing actual orders!")
+        start_time = time.time()
+        results = await pool.place_orders_parallel(order)
+        duration = time.time() - start_time
+        
+        logger.info(f"✅ Order placement completed in {duration:.2f}s")
+        logger.info(f"   (Average: {duration/len(results):.2f}s per account)\n")
+        
+        # Process results
+        success_count = 0
+        failure_count = 0
+        
+        for result in results:
+            if result.success:
+                success_count += 1
+                order_response = result.result
+                logger.info(f"✅ {result.account_id}:")
+                logger.info(f"   Order ID: {order_response.order_id}")
+                logger.info(f"   Status: {order_response.status}")
+                logger.info(f"   Price: ${order_response.price}")
+            else:
+                failure_count += 1
+                logger.error(f"❌ {result.account_id}: {result.error}")
+        
+        logger.info(f"\n📊 Summary: {success_count} succeeded, {failure_count} failed")
+    else:
+        logger.info("\n💡 DEMO MODE: No actual orders placed")
+        logger.info("   To enable real trading, set ENABLE_REAL_TRADING=True")
+        logger.info(f"\n   Order details that WOULD be placed:")
+        logger.info(f"   - Symbol: {order.symbol}")
+        logger.info(f"   - Side: {order.side}")
+        logger.info(f"   - Type: {order.order_type}")
+        logger.info(f"   - Quantity: {order.quantity}")
+        logger.info(f"   - Price: ${order.price}")
+        logger.info(f"   - Time in Force: {order.time_in_force}")
 
 
 async def demonstrate_parallel_bbo_orders(pool: AccountPool):
-    """Demonstrate parallel BBO order placement."""
+    """Demonstrate parallel BBO order placement (DEMO MODE)."""
     logger.info("\n" + "=" * 70)
-    logger.info("DEMO 4: Parallel BBO Order Placement")
+    logger.info("DEMO 4: Parallel BBO Order Placement (SIMULATION)")
     logger.info("=" * 70)
     
     SYMBOL = "BTCUSDT"
@@ -183,35 +216,40 @@ async def demonstrate_parallel_bbo_orders(pool: AccountPool):
         if symbol_info.price_filter:
             tick_size = symbol_info.price_filter.tick_size
     
-    logger.info(f"\n🎯 Placing BBO {SIDE.upper()} orders:")
+    logger.info(f"\n🎯 DEMO: Would place BBO {SIDE.upper()} orders:")
     logger.info(f"   Symbol: {SYMBOL}")
     logger.info(f"   Quantity: {QUANTITY}")
     logger.info(f"   Market Price: ${market_price}")
     logger.info(f"   Tick Size: {tick_size}")
-    logger.info(f"   Ticks Distance: {TICKS_DISTANCE}\n")
+    logger.info(f"   Ticks Distance: {TICKS_DISTANCE}")
     
-    start_time = time.time()
-    results = await pool.place_bbo_orders_parallel(
-        symbol=SYMBOL,
-        side=SIDE,
-        quantity=QUANTITY,
-        market_price=market_price,
-        tick_size=tick_size,
-        ticks_distance=TICKS_DISTANCE,
-        time_in_force="gtc",
-    )
-    duration = time.time() - start_time
-    
-    logger.info(f"✅ BBO orders placed in {duration:.2f}s\n")
-    
-    for result in results:
-        if result.success:
-            order_response = result.result
-            logger.info(f"✅ {result.account_id}:")
-            logger.info(f"   Order ID: {order_response.order_id}")
-            logger.info(f"   BBO Price: ${order_response.price}")
-        else:
-            logger.error(f"❌ {result.account_id}: {result.error}")
+    if ENABLE_REAL_TRADING:
+        logger.warning("\n⚠️  REAL TRADING ENABLED - Placing actual BBO orders!")
+        start_time = time.time()
+        results = await pool.place_bbo_orders_parallel(
+            symbol=SYMBOL,
+            side=SIDE,
+            quantity=QUANTITY,
+            market_price=market_price,
+            tick_size=tick_size,
+            ticks_distance=TICKS_DISTANCE,
+            time_in_force="gtc",
+        )
+        duration = time.time() - start_time
+        
+        logger.info(f"✅ BBO orders placed in {duration:.2f}s\n")
+        
+        for result in results:
+            if result.success:
+                order_response = result.result
+                logger.info(f"✅ {result.account_id}:")
+                logger.info(f"   Order ID: {order_response.order_id}")
+                logger.info(f"   BBO Price: ${order_response.price}")
+            else:
+                logger.error(f"❌ {result.account_id}: {result.error}")
+    else:
+        logger.info("\n💡 DEMO MODE: No actual orders placed")
+        logger.info("   To enable real trading, set ENABLE_REAL_TRADING=True")
 
 
 async def demonstrate_custom_parallel_execution(pool: AccountPool):
@@ -227,10 +265,13 @@ async def demonstrate_custom_parallel_execution(pool: AccountPool):
         positions = await client.get_positions()
         balances = await client.get_balances()
         
+        # Filter non-empty positions
+        non_empty_positions = [p for p in positions if p.quantity != Decimal("0")]
+        
         return {
             "status": account_info.status,
             "balance": str(account_info.cash),
-            "position_count": len(positions),
+            "position_count": len(non_empty_positions),
             "balance_count": len(balances),
         }
     
@@ -244,7 +285,7 @@ async def demonstrate_custom_parallel_execution(pool: AccountPool):
             logger.info(f"✅ {result.account_id}:")
             logger.info(f"   Status: {data['status']}")
             logger.info(f"   Balance: ${data['balance']}")
-            logger.info(f"   Positions: {data['position_count']}")
+            logger.info(f"   Open Positions: {data['position_count']}")
             logger.info(f"   Assets: {data['balance_count']}")
         else:
             logger.error(f"❌ {result.account_id}: {result.error}")
@@ -253,24 +294,35 @@ async def demonstrate_custom_parallel_execution(pool: AccountPool):
 async def main():
     """Main function to run all demonstrations."""
     
-    # Load accounts from environment
-    accounts = load_accounts_from_env()
-    
-    if not accounts:
-        logger.error("No accounts found in environment variables!")
-        logger.error("Please set ACCOUNT_1_API_KEY, ACCOUNT_1_API_SECRET, etc.")
-        print_setup_instructions()
-        return
+    # Configuration
+    CONFIG_FILE = "accounts_config.yml"
     
     logger.info("=" * 70)
     logger.info("PARALLEL ORDER EXECUTION DEMO")
     logger.info("=" * 70)
-    logger.info(f"Loaded {len(accounts)} account(s) from environment\n")
     
-    for acc in accounts:
-        logger.info(f"  • {acc.id} (simulation: {acc.simulation})")
+    if not ENABLE_REAL_TRADING:
+        logger.info("\n💡 DEMO MODE: This example will NOT place real orders")
+        logger.info("   All order placement demos are simulated")
+        logger.info("   Only read-only operations (account info, positions) are executed\n")
+    else:
+        logger.warning("\n⚠️  WARNING: REAL TRADING MODE ENABLED!")
+        logger.warning("   This will place ACTUAL orders on the exchange!")
+        logger.warning("   Press Ctrl+C within 5 seconds to cancel...\n")
+        await asyncio.sleep(5)
     
     try:
+        # Load accounts from config file
+        project_root = Path(__file__).parent.parent
+        config_path = project_root / CONFIG_FILE
+        
+        logger.info(f"Loading accounts from: {config_path}")
+        accounts = load_accounts_from_config(str(config_path))
+        logger.info(f"Loaded {len(accounts)} account(s) from configuration\n")
+        
+        for acc in accounts:
+            logger.info(f"  • {acc.id} (simulation: {acc.simulation})")
+        
         # Create AccountPool
         async with AccountPool(accounts) as pool:
             logger.info(f"\n✅ AccountPool initialized with {pool.account_count} accounts\n")
@@ -279,33 +331,26 @@ async def main():
             await demonstrate_parallel_account_info(pool)
             await demonstrate_parallel_positions(pool)
             
-            # Uncomment to test actual order placement:
-            # WARNING: This will place real orders if not in simulation mode!
-            # await demonstrate_parallel_order_placement(pool)
-            # await demonstrate_parallel_bbo_orders(pool)
+            # Order placement demos (DEMO MODE by default)
+            await demonstrate_parallel_order_placement(pool)
+            await demonstrate_parallel_bbo_orders(pool)
             
             await demonstrate_custom_parallel_execution(pool)
             
+    except FileNotFoundError as e:
+        logger.error(f"\n❌ Configuration Error: {e}")
+        logger.error("\nTo get started:")
+        logger.error("  1. Copy accounts_config.example.yml to accounts_config.yml")
+        logger.error("  2. Add your account credentials to accounts_config.yml")
+        sys.exit(1)
+        
+    except ValueError as e:
+        logger.error(f"\n❌ Configuration Error: {e}")
+        sys.exit(1)
+        
     except Exception as e:
         logger.error(f"Error: {type(e).__name__}: {e}")
         raise
-
-
-def print_setup_instructions():
-    """Print setup instructions for environment variables."""
-    print("\n" + "=" * 70)
-    print("SETUP INSTRUCTIONS")
-    print("=" * 70)
-    print("Set environment variables for your accounts:\n")
-    print("# Account 1")
-    print("export ACCOUNT_1_API_KEY=your_api_key_here")
-    print("export ACCOUNT_1_API_SECRET=your_api_secret_here")
-    print("export ACCOUNT_1_SIMULATION=true  # Optional, default: false\n")
-    print("# Account 2")
-    print("export ACCOUNT_2_API_KEY=your_api_key_here")
-    print("export ACCOUNT_2_API_SECRET=your_api_secret_here\n")
-    print("# Account 3, 4, etc...")
-    print("=" * 70)
 
 
 if __name__ == "__main__":

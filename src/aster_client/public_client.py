@@ -98,6 +98,7 @@ class AsterPublicClient:
             "all_mark_prices": "/fapi/v1/premiumIndex",
             "exchange_info": "/fapi/v1/exchangeInfo",
             "symbol_info": "/fapi/v1/exchangeInfo",
+            "depth": "/fapi/v1/depth",
         }
 
         # Initialize session (will be created lazily when needed)
@@ -389,6 +390,47 @@ class AsterPublicClient:
 
 
         return None
+
+    async def get_order_book(
+        self, symbol: str, limit: int = 5
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get order book depth for a specific symbol.
+
+        Args:
+            symbol: Trading symbol (e.g., 'BTCUSDT')
+            limit: Depth limit. Default 5; Valid limits: [5, 10, 20, 50, 100, 500, 1000]
+
+        Returns:
+            Order book data with bids and asks
+            Response format:
+            {
+                "lastUpdateId": 1027024,
+                "E": 1589436922972,  # Message output time
+                "T": 1589436922959,  # Transaction time
+                "bids": [["price", "quantity"], ...],
+                "asks": [["price", "quantity"], ...]
+            }
+        """
+        if not validate_symbol(symbol):
+            raise ValueError(f"Invalid symbol format: {symbol}")
+
+        # Validate limit
+        valid_limits = [5, 10, 20, 50, 100, 500, 1000]
+        if limit not in valid_limits:
+            raise ValueError(
+                f"Invalid limit: {limit}. Valid limits are: {valid_limits}"
+            )
+
+        params = {"symbol": symbol, "limit": limit}
+        endpoint = self.endpoints["depth"]
+
+        try:
+            response = await self._make_request("GET", endpoint, params)
+            return response
+        except Exception as e:
+            logger.error(f"Failed to get order book for {symbol}: {e}")
+            return None
     
 
 if __name__ == "__main__":

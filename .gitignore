@@ -107,6 +107,7 @@ trading_logs_session_*.log
 *.log.*
 
 # Account credentials and sensitive data
+accounts_config.yml
 accounts.db
 accounts.db-shm
 accounts.db-wal

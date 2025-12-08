@@ -17,46 +17,53 @@ BBO orders are limit orders strategically placed near the market price to:
 ### Price Calculation
 
 The BBO price is calculated based on:
-- **Current market price**: The reference price from which to offset
+- **Best bid/ask**: The current order book top prices
 - **Tick size**: The minimum price increment for the symbol
-- **Ticks distance**: How many ticks away from market price (configurable, default: 1)
+- **Ticks distance**: How many ticks away from best prices (configurable, default: 1)
 
-**Formula:**
+**Formula (Maker-Side Pricing):**
 ```
-BUY orders:  BBO Price = Market Price + (Tick Size × Ticks Distance)
-SELL orders: BBO Price = Market Price - (Tick Size × Ticks Distance)
+BUY orders:  BBO Price = Best Bid - (Tick Size × Ticks Distance)
+SELL orders: BBO Price = Best Ask + (Tick Size × Ticks Distance)
 ```
+
+> **Why?** Placing BUY orders below the best bid and SELL orders above the best ask
+> ensures your order doesn't cross the spread, guaranteeing execution as a maker order
+> with lower (or rebate) fees.
 
 ### Examples
 
 **Example 1: BTC with 1 tick distance (default)**
 ```
-Market Price: $92,419.60
+Best Bid: $92,419.60
+Best Ask: $92,419.70
 Tick Size: $0.10
 Ticks Distance: 1 (default)
 
-BUY BBO Price:  $92,419.60 + ($0.10 × 1) = $92,419.70
-SELL BBO Price: $92,419.60 - ($0.10 × 1) = $92,419.50
+BUY BBO Price:  $92,419.60 - ($0.10 × 1) = $92,419.50 (below best bid = maker)
+SELL BBO Price: $92,419.70 + ($0.10 × 1) = $92,419.80 (above best ask = maker)
 ```
 
 **Example 2: BTC with 5 tick distance**
 ```
-Market Price: $92,419.60
+Best Bid: $92,419.60
+Best Ask: $92,419.70
 Tick Size: $0.10
 Ticks Distance: 5
 
-BUY BBO Price:  $92,419.60 + ($0.10 × 5) = $92,420.10
-SELL BBO Price: $92,419.60 - ($0.10 × 5) = $92,419.10
+BUY BBO Price:  $92,419.60 - ($0.10 × 5) = $92,419.10 (5 ticks below bid)
+SELL BBO Price: $92,419.70 + ($0.10 × 5) = $92,420.20 (5 ticks above ask)
 ```
 
 **Example 3: ETH with custom tick distance**
 ```
-Market Price: $3,000.00
+Best Bid: $3,000.00
+Best Ask: $3,000.05
 Tick Size: $0.01
 Ticks Distance: 3
 
-BUY BBO Price:  $3,000.00 + ($0.01 × 3) = $3,000.03
-SELL BBO Price: $3,000.00 - ($0.01 × 3) = $2,999.97
+BUY BBO Price:  $3,000.00 - ($0.01 × 3) = $2,999.97 (3 ticks below bid)
+SELL BBO Price: $3,000.05 + ($0.01 × 3) = $3,000.08 (3 ticks above ask)
 ```
 
 ## Use Cases
@@ -177,6 +184,81 @@ async def place_bbo_buy_order():
         
         print(f"Order placed at ${order.price}")
         print(f"Market price was ${market_price}")
+```
+
+### `place_bbo_order_with_retry()`
+
+Place a BBO order with automatic retry on unfilled orders.
+
+This method places a BBO order and automatically retries with updated prices if the order doesn't fill within the specified timeout. It will stop retrying if the price moves beyond the max chase limit.
+
+**Method Signature:**
+```python
+async def place_bbo_order_with_retry(
+    symbol: str,
+    side: str,
+    quantity: Decimal,
+    tick_size: Decimal,
+    ticks_distance: int = 1,
+    max_retries: int = 2,
+    fill_timeout_ms: int = 1000,
+    max_chase_percent: float = 0.5,
+    time_in_force: str = "gtc",
+    client_order_id: Optional[str] = None,
+    position_side: Optional[str] = None,
+) -> OrderResponse
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `symbol` | `str` | Yes | - | Trading symbol (e.g., "BTCUSDT") |
+| `side` | `str` | Yes | - | Order side: "buy" or "sell" |
+| `quantity` | `Decimal` | Yes | - | Order quantity |
+| `tick_size` | `Decimal` | Yes | - | Tick size for the symbol |
+| `ticks_distance` | `int` | No | `1` | Number of ticks away from best price |
+| `max_retries` | `int` | No | `2` | Maximum retry attempts |
+| `fill_timeout_ms` | `int` | No | `1000` | Time to wait for fill before retry (ms) |
+| `max_chase_percent` | `float` | No | `0.5` | Maximum price deviation from original (%) |
+| `time_in_force` | `str` | No | `"gtc"` | Time in force |
+| `client_order_id` | `str` | No | `None` | Custom client order ID |
+| `position_side` | `str` | No | `None` | Position side for hedge mode |
+
+**Returns:**
+- `OrderResponse`: Filled order details
+
+**Raises:**
+- `BBORetryExhausted`: If max retries exceeded without fill
+- `BBOPriceChaseExceeded`: If price moved beyond max chase limit
+- `ValueError`: If BBO prices not available
+
+**Example:**
+```python
+from decimal import Decimal
+from aster_client import AsterClient, BBORetryExhausted, BBOPriceChaseExceeded
+
+async def place_bbo_with_retry():
+    async with AsterClient.from_env() as client:
+        try:
+            # Aggressive fill: 5 retries, 500ms timeout, 1% chase limit
+            order = await client.place_bbo_order_with_retry(
+                symbol="BTCUSDT",
+                side="buy",
+                quantity=Decimal("0.001"),
+                tick_size=Decimal("0.1"),
+                max_retries=5,
+                fill_timeout_ms=500,
+                max_chase_percent=1.0,
+                position_side="LONG"
+            )
+            print(f"✅ Filled at ${order.average_price}")
+            
+        except BBORetryExhausted:
+            print("❌ Order not filled after all retries")
+            
+        except BBOPriceChaseExceeded:
+            print("⚠️ Price moved too far, stopped chasing")
 ```
 
 ### `calculate_bbo_price()`

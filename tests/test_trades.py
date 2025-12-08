@@ -57,10 +57,13 @@ class TestTPSLCalculation:
         )
         
         # For SELL: TP below entry, SL above entry
+        # TP = 3500 * (1 - 0.01) = 3500 * 0.99 = 3465.00
+        # SL = 3500 * (1 + 0.005) = 3500 * 1.005 = 3517.50
         assert tp_price < entry_price
         assert sl_price > entry_price
-        assert tp_price == Decimal("3482.50")  # 3500 * 0.995
-        assert sl_price == Decimal("3535.00")  # 3500 * 1.01
+        assert tp_price == Decimal("3465.00")  # 3500 * 0.99
+        assert sl_price == Decimal("3517.50")  # 3500 * 1.005
+
     
     def test_tp_sl_with_different_tick_size(self):
         """Test TP/SL calculation with different tick sizes."""
@@ -246,24 +249,7 @@ class TestTradeCreation:
         # Mock client
         mock_client = AsyncMock()
         
-        # Mock BBO order placement
-        entry_response = OrderResponse(
-            order_id="entry123",
-            client_order_id=None,
-            symbol="ETHUSDT",
-            side="buy",
-            order_type="limit",
-            quantity=Decimal("0.1"),
-            price=Decimal("3500.50"),
-            status="NEW",
-            filled_quantity=Decimal("0"),
-            remaining_quantity=Decimal("0.1"),
-            average_price=None,
-            timestamp=1234567890,
-        )
-        mock_client.place_bbo_order.return_value = entry_response
-        
-        # Mock filled order for wait
+        # Mock BBO order with retry - returns filled order directly
         filled_entry = OrderResponse(
             order_id="entry123",
             client_order_id=None,
@@ -278,7 +264,7 @@ class TestTradeCreation:
             average_price=Decimal("3501.00"),
             timestamp=1234567890,
         )
-        mock_client.get_order.return_value = filled_entry
+        mock_client.place_bbo_order_with_retry.return_value = filled_entry
         
         # Mock TP/SL placements
         tp_response = OrderResponse(
@@ -319,12 +305,14 @@ class TestTradeCreation:
             symbol="ETHUSDT",
             side="buy",
             quantity=Decimal("0.1"),
-            market_price=Decimal("3500.00"),
+            best_bid=Decimal("3500.00"),
+            best_ask=Decimal("3500.50"),
             tick_size=Decimal("0.01"),
             tp_percent=1.0,
             sl_percent=0.5,
-            fill_timeout=10.0,
-            poll_interval=0.1,
+            max_retries=2,
+            fill_timeout_ms=100,
+            max_chase_percent=0.1,
         )
         
         # Verify trade structure
@@ -334,63 +322,39 @@ class TestTradeCreation:
         assert trade.entry_order.order_id == "entry123"
         assert trade.take_profit_order.order_id == "tp123"
         assert trade.stop_loss_order.order_id == "sl123"
+
     
     @pytest.mark.asyncio
     async def test_trade_creation_entry_timeout(self):
-        """Test trade creation when entry order times out."""
+        """Test trade creation when BBO retry is exhausted."""
         mock_client = AsyncMock()
         
-        # Mock BBO order placement
-        entry_response = OrderResponse(
-            order_id="entry123",
-            client_order_id=None,
-            symbol="ETHUSDT",
-            side="buy",
-            order_type="limit",
-            quantity=Decimal("0.1"),
-            price=Decimal("3500.50"),
-            status="NEW",
-            filled_quantity=Decimal("0"),
-            remaining_quantity=Decimal("0.1"),
-            average_price=None,
-            timestamp=1234567890,
+        # Mock BBO order with retry - raises exception on failure
+        from aster_client import BBORetryExhausted
+        mock_client.place_bbo_order_with_retry.side_effect = BBORetryExhausted(
+            "Max retries (2) exhausted without fill"
         )
-        mock_client.place_bbo_order.return_value = entry_response
         
-        # Mock pending order (never fills)
-        pending_order = OrderResponse(
-            order_id="entry123",
-            client_order_id=None,
-            symbol="ETHUSDT",
-            side="buy",
-            order_type="limit",
-            quantity=Decimal("0.1"),
-            price=Decimal("3500.50"),
-            status="PENDING",
-            filled_quantity=Decimal("0"),
-            remaining_quantity=Decimal("0.1"),
-            average_price=None,
-            timestamp=1234567890,
-        )
-        mock_client.get_order.return_value = pending_order
-        
-        # Create trade with short timeout
+        # Create trade - should handle the exception gracefully
         trade = await create_trade(
             client=mock_client,
             symbol="ETHUSDT",
             side="buy",
             quantity=Decimal("0.1"),
-            market_price=Decimal("3500.00"),
+            best_bid=Decimal("3500.00"),
+            best_ask=Decimal("3500.50"),
             tick_size=Decimal("0.01"),
             tp_percent=1.0,
             sl_percent=0.5,
-            fill_timeout=0.5,
-            poll_interval=0.1,
+            max_retries=2,
+            fill_timeout_ms=100,
+            max_chase_percent=0.1,
         )
         
         # Verify trade is cancelled
         assert trade.status == TradeStatus.CANCELLED
         assert trade.entry_order.error is not None
+        assert "exhausted" in trade.entry_order.error.lower()
 
 
 class TestTradeDataStructures:

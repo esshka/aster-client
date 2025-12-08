@@ -44,15 +44,20 @@ async def main():
     
     # Create clients
     async with AsterClient.from_env() as client, AsterPublicClient() as public_client:
-        # Step 1: Get current market price
+        # Step 1: Get order book for best bid/ask
         logger.info("\n📊 Fetching market data...")
-        ticker = await public_client.get_ticker(symbol)
-        if not ticker or 'markPrice' not in ticker:
-            logger.error(f"Failed to get ticker for {symbol}")
+        order_book = await public_client.get_order_book(symbol, limit=5)
+        if not order_book or 'bids' not in order_book or 'asks' not in order_book:
+            logger.error(f"Failed to get order book for {symbol}")
             return
         
-        market_price = Decimal(str(ticker['markPrice']))
-        logger.info(f"   Current price: ${market_price}")
+        best_bid = Decimal(str(order_book['bids'][0][0]))
+        best_ask = Decimal(str(order_book['asks'][0][0]))
+        market_price = (best_bid + best_ask) / 2  # Mid price for display
+        
+        logger.info(f"   Best Bid: ${best_bid}")
+        logger.info(f"   Best Ask: ${best_ask}")
+        logger.info(f"   Mid Price: ${market_price}")
         
         # Step 2: Get symbol information for tick size
         symbol_info = await public_client.get_symbol_info(symbol)
@@ -96,14 +101,17 @@ async def main():
             symbol=symbol,
             side=side,
             quantity=quantity,
-            market_price=market_price,
+            best_bid=best_bid,
+            best_ask=best_ask,
             tick_size=tick_size,
             tp_percent=tp_percent,
             sl_percent=sl_percent,
             ticks_distance=ticks_distance,
-            fill_timeout=30.0,  # 30 seconds timeout for testing
-            poll_interval=2.0,
+            max_retries=2,
+            fill_timeout_ms=1000,
+            max_chase_percent=0.1,
         )
+
         
         # Step 5: Display results
         logger.info("\n" + "=" * 60)

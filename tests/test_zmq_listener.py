@@ -61,10 +61,16 @@ class TestZMQTradeListener:
         listener = ZMQTradeListener(zmq_url="tcp://127.0.0.1:5555")
         
         # Mock public_client methods
-        listener.public_client.get_ticker = AsyncMock(return_value={"markPrice": "90000.0"})
+        listener.public_client.get_order_book = AsyncMock(return_value={
+            "bids": [["90000.0", "1.0"]],
+            "asks": [["90001.0", "1.0"]]
+        })
         listener.public_client.get_symbol_info = AsyncMock(return_value=MagicMock(
             price_filter=MagicMock(tick_size="0.1")
         ))
+        
+        # Mock BBO calculator
+        listener.bbo_calculator.get_bbo = MagicMock(return_value=(Decimal("90000.0"), Decimal("90001.0")))
         
         # Mock AccountPool and create_trade
         with patch('aster_client.zmq_listener.AccountPool') as mock_pool_class, \
@@ -150,10 +156,16 @@ class TestZMQTradeListener:
             )
         
         # Mock public_client methods
-        listener.public_client.get_ticker = AsyncMock(return_value={"markPrice": "90000.0"})
+        listener.public_client.get_order_book = AsyncMock(return_value={
+            "bids": [["90000.0", "1.0"]],
+            "asks": [["90001.0", "1.0"]]
+        })
         listener.public_client.get_symbol_info = AsyncMock(return_value=MagicMock(
             price_filter=MagicMock(tick_size="0.1")
         ))
+        
+        # Mock BBO calculator
+        listener.bbo_calculator.get_bbo = MagicMock(return_value=(Decimal("90000.0"), Decimal("90001.0")))
         
         with patch('aster_client.zmq_listener.AccountPool') as mock_pool_class, \
              patch('aster_client.zmq_listener.create_trade', side_effect=mock_create_trade):
@@ -173,10 +185,16 @@ class TestZMQTradeListener:
         listener = ZMQTradeListener(zmq_url="tcp://127.0.0.1:5555")
         
         # Mock public_client methods
-        listener.public_client.get_ticker = AsyncMock(return_value={"markPrice": "90000.0"})
+        listener.public_client.get_order_book = AsyncMock(return_value={
+            "bids": [["90000.0", "1.0"]],
+            "asks": [["90001.0", "1.0"]]
+        })
         listener.public_client.get_symbol_info = AsyncMock(return_value=MagicMock(
             price_filter=MagicMock(tick_size="0.1")
         ))
+        
+        # Mock BBO calculator
+        listener.bbo_calculator.get_bbo = MagicMock(return_value=(Decimal("90000.0"), Decimal("90001.0")))
         
         call_count = [0]
         
@@ -213,11 +231,15 @@ class TestZMQTradeListener:
         listener.ctx = MagicMock()
         listener.running = True
         
+        # Mock BBO calculator stop
+        listener.bbo_calculator.stop = AsyncMock()
+        
         await listener.stop()
         
         assert listener.running is False
         assert listener.socket.close.called
         assert listener.ctx.term.called
+        assert listener.bbo_calculator.stop.called
     
     @pytest.mark.asyncio
     async def test_process_message_uses_correct_quantities(self, sample_trade_message):
@@ -225,10 +247,16 @@ class TestZMQTradeListener:
         listener = ZMQTradeListener(zmq_url="tcp://127.0.0.1:5555")
         
         # Mock public_client methods
-        listener.public_client.get_ticker = AsyncMock(return_value={"markPrice": "90000.0"})
+        listener.public_client.get_order_book = AsyncMock(return_value={
+            "bids": [["90000.0", "1.0"]],
+            "asks": [["90001.0", "1.0"]]
+        })
         listener.public_client.get_symbol_info = AsyncMock(return_value=MagicMock(
             price_filter=MagicMock(tick_size="0.1")
         ))
+        
+        # Mock BBO calculator
+        listener.bbo_calculator.get_bbo = MagicMock(return_value=(Decimal("90000.0"), Decimal("90001.0")))
         
         captured_quantities = []
         

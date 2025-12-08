@@ -5,7 +5,12 @@ This package provides a simple and efficient client for interacting with
 the Aster DEX futures trading API.
 """
 
-from .account_client import AsterClient, create_aster_client
+from .account_client import (
+    AsterClient,
+    create_aster_client,
+    BBORetryExhausted,
+    BBOPriceChaseExceeded,
+)
 from .account_pool import AccountPool, AccountConfig, AccountResult
 from .public_client import AsterPublicClient
 from .models import (
@@ -54,4 +59,7 @@ __all__ = [
     "calculate_tp_sl_prices",
     "wait_for_order_fill",
     "ZMQTradeListener",
+    # BBO Exceptions
+    "BBORetryExhausted",
+    "BBOPriceChaseExceeded",
 ]
