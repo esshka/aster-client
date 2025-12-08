@@ -199,6 +199,8 @@ class AsterClient:
         time_in_force: str = "gtc",
         client_order_id: Optional[str] = None,
         position_side: Optional[str] = None,
+        best_bid: Optional[Decimal] = None,
+        best_ask: Optional[Decimal] = None,
     ) -> OrderResponse:
         """
         Place a BBO order with automatic retry on unfilled orders.
@@ -219,6 +221,8 @@ class AsterClient:
             time_in_force: Time in force (default: "gtc")
             client_order_id: Optional client order ID
             position_side: Optional position side for hedge mode
+            best_bid: Optional initial best bid (used if WebSocket cache is empty)
+            best_ask: Optional initial best ask (used if WebSocket cache is empty)
 
         Returns:
             OrderResponse with filled order details
@@ -228,25 +232,30 @@ class AsterClient:
             BBOPriceChaseExceeded: If price moved beyond max chase limit
             ValueError: If BBO prices not available
         """
-        # Get initial BBO prices from cache
+        # Get initial BBO prices from cache or use provided values
         bbo = self._bbo_calculator.get_bbo(symbol)
-        if not bbo:
-            raise ValueError(f"BBO prices not available for {symbol}. Ensure WebSocket is connected.")
+        if bbo:
+            original_best_bid, original_best_ask = bbo
+        elif best_bid is not None and best_ask is not None:
+            original_best_bid, original_best_ask = best_bid, best_ask
+            logger.info(f"Using provided BBO prices for {symbol}: Bid={best_bid}, Ask={best_ask}")
+        else:
+            raise ValueError(f"BBO prices not available for {symbol}. Ensure WebSocket is connected or provide best_bid/best_ask.")
         
-        original_best_bid, original_best_ask = bbo
         original_reference = original_best_bid if side.lower() == "buy" else original_best_ask
         
         attempts = 0
         last_order_response = None
         
         while attempts <= max_retries:
-            # Get fresh BBO prices for each attempt
+            # Get fresh BBO prices for each attempt (prefer cache, fallback to provided)
             bbo = self._bbo_calculator.get_bbo(symbol)
-            if not bbo:
-                raise ValueError(f"BBO prices not available for {symbol}")
-            
-            best_bid, best_ask = bbo
-            current_reference = best_bid if side.lower() == "buy" else best_ask
+            if bbo:
+                current_best_bid, current_best_ask = bbo
+            else:
+                current_best_bid, current_best_ask = original_best_bid, original_best_ask
+
+            current_reference = current_best_bid if side.lower() == "buy" else current_best_ask
             
             # Check price deviation (except for first attempt)
             if attempts > 0:
@@ -262,8 +271,9 @@ class AsterClient:
             
             # Calculate BBO price and place order
             bbo_price = self._bbo_calculator.calculate_bbo_price(
-                symbol, side, best_bid, best_ask, tick_size, ticks_distance
+                symbol, side, current_best_bid, current_best_ask, tick_size, ticks_distance
             )
+
             
             logger.info(
                 f"🎯 BBO Order Attempt {attempts + 1}/{max_retries + 1}: "

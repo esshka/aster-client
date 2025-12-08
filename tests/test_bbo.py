@@ -96,6 +96,18 @@ class TestBBOPriceCalculator:
         )
         assert result == Decimal("10.01")  # ask + (0.001 * 10)
 
+        # BUY with 0 ticks distance (at best bid = maker, closest to spread)
+        result = calculator.calculate_bbo_price(
+            "BTCUSDT", "buy", Decimal("50000.0"), Decimal("50000.5"), Decimal("0.1"), ticks_distance=0
+        )
+        assert result == Decimal("50000.0")  # at best bid
+
+        # SELL with 0 ticks distance (at best ask = maker, closest to spread)
+        result = calculator.calculate_bbo_price(
+            "ETHUSDT", "sell", Decimal("2999.0"), Decimal("3000.0"), Decimal("0.01"), ticks_distance=0
+        )
+        assert result == Decimal("3000.0")  # at best ask
+
     def test_price_precision(self, calculator):
         """Test price precision calculation."""
         assert calculator._get_price_precision(Decimal("1")) == 0
@@ -154,12 +166,9 @@ class TestBBOPriceCalculator:
 
     def test_invalid_ticks_distance(self, calculator):
         """Test error handling for invalid ticks distance."""
-        with pytest.raises(ValueError, match="Ticks distance must be at least 1"):
-            calculator.calculate_bbo_price(
-                "BTCUSDT", "buy", Decimal("50000"), Decimal("50001"), Decimal("0.1"), ticks_distance=0
-            )
-
-        with pytest.raises(ValueError, match="Ticks distance must be at least 1"):
+        # ticks_distance=0 is now allowed (places at best bid/ask)
+        # Only negative values should raise error
+        with pytest.raises(ValueError, match="Ticks distance must be at least 0"):
             calculator.calculate_bbo_price(
                 "BTCUSDT", "buy", Decimal("50000"), Decimal("50001"), Decimal("0.1"), ticks_distance=-1
             )

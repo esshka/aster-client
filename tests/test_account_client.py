@@ -171,6 +171,7 @@ class TestOrderOperations:
     @pytest.mark.asyncio
     async def test_cancel_order_success(self, account_client):
         """Test successful cancel_order call."""
+        symbol = "BTCUSDT"
         order_id = "order_123456"
         cancel_response = {"status": "cancelled", "order_id": order_id}
 
@@ -180,15 +181,16 @@ class TestOrderOperations:
             with patch.object(account_client._api_methods, 'cancel_order') as mock_api:
                 mock_api.return_value = cancel_response
 
-                result = await account_client.cancel_order(order_id)
+                result = await account_client.cancel_order(symbol, order_id)
 
                 assert result == cancel_response
                 mock_session.assert_called_once()
-                mock_api.assert_called_once_with(mock_session.return_value, order_id)
+                mock_api.assert_called_once_with(mock_session.return_value, symbol, order_id, None)
 
     @pytest.mark.asyncio
     async def test_get_order_success(self, account_client, order_response_data):
         """Test successful get_order call."""
+        symbol = "BTCUSDT"
         order_id = "order_123456"
 
         with patch.object(account_client._session_manager, 'create_session') as mock_session:
@@ -197,15 +199,16 @@ class TestOrderOperations:
             with patch.object(account_client._api_methods, 'get_order') as mock_api:
                 mock_api.return_value = order_response_data
 
-                result = await account_client.get_order(order_id)
+                result = await account_client.get_order(symbol, order_id)
 
                 assert result == order_response_data
                 mock_session.assert_called_once()
-                mock_api.assert_called_once_with(mock_session.return_value, order_id)
+                mock_api.assert_called_once_with(mock_session.return_value, symbol, order_id, None)
 
     @pytest.mark.asyncio
     async def test_get_order_not_found(self, account_client):
         """Test get_order when order is not found."""
+        symbol = "BTCUSDT"
         order_id = "nonexistent_order"
 
         with patch.object(account_client._session_manager, 'create_session') as mock_session:
@@ -214,7 +217,7 @@ class TestOrderOperations:
             with patch.object(account_client._api_methods, 'get_order') as mock_api:
                 mock_api.return_value = None
 
-                result = await account_client.get_order(order_id)
+                result = await account_client.get_order(symbol, order_id)
 
                 assert result is None
 

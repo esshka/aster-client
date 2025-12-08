@@ -305,8 +305,8 @@ class BBOPriceCalculator:
         if tick_size <= 0:
             raise ValueError("Tick size must be greater than 0")
 
-        if ticks_distance < 1:
-            raise ValueError("Ticks distance must be at least 1")
+        if ticks_distance < 0:
+            raise ValueError("Ticks distance must be at least 0")
 
         # Calculate BBO price based on side and ticks distance
         price_adjustment = tick_size * ticks_distance

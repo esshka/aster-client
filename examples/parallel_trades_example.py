@@ -43,7 +43,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ⚠️  SAFETY FLAG - Set to True to enable real trading (NOT RECOMMENDED)
-ENABLE_REAL_TRADING = False
+ENABLE_REAL_TRADING = True
 
 
 def load_accounts_from_config(config_path: str) -> list[AccountConfig]:
@@ -90,7 +90,8 @@ async def create_trade_for_account(
     symbol: str,
     side: str,
     quantity: Decimal,
-    market_price: Decimal,
+    best_bid: Decimal,
+    best_ask: Decimal,
     tick_size: Decimal,
     tp_percent: float,
     sl_percent: float,
@@ -103,15 +104,19 @@ async def create_trade_for_account(
         symbol=symbol,
         side=side,
         quantity=quantity,
-        market_price=market_price,
+        best_bid=best_bid,
+        best_ask=best_ask,
         tick_size=tick_size,
         tp_percent=tp_percent,
         sl_percent=sl_percent,
-        fill_timeout=30.0,
-        poll_interval=2.0,
+        ticks_distance=0,       # Place at best bid/ask for highest fill priority
+        max_retries=2,          # Retry up to 2 times if not filled
+        fill_timeout_ms=1000,   # Wait 1 second per attempt
+        max_chase_percent=0.1,  # Maximum 0.1% price chase
     )
     
     return account_id, trade
+
 
 
 async def simulate_trade_creation(
@@ -157,9 +162,9 @@ async def main():
     """Main example function."""
     # Configuration
     CONFIG_FILE = "accounts_config.yml"
-    symbol = "ETHUSDT"
+    symbol = "SOLUSDT"
     side = "buy"
-    usdt_amount = 10.0
+    usdt_amount = 20.0
     tp_percent = 1.0
     sl_percent = 0.5
     
@@ -196,31 +201,50 @@ async def main():
         # Get market data using public client
         async with AsterPublicClient() as public_client:
             logger.info("\n📊 Fetching market data...")
-            ticker = await public_client.get_ticker(symbol)
-            if not ticker or not ticker.markPrice:
-                logger.error(f"Failed to get ticker for {symbol}")
+            
+            # Get order book for best bid/ask
+            order_book = await public_client.get_order_book(symbol, limit=5)
+            if not order_book or "bids" not in order_book or "asks" not in order_book:
+                logger.error(f"Failed to get order book for {symbol}")
                 return
             
-            market_price = Decimal(str(ticker.markPrice))
-            logger.info(f"   Current price: ${market_price}")
+            best_bid = Decimal(str(order_book["bids"][0][0]))
+            best_ask = Decimal(str(order_book["asks"][0][0]))
+            market_price = (best_bid + best_ask) / 2  # Mid price for display
+            
+            logger.info(f"   Best Bid: ${best_bid}")
+            logger.info(f"   Best Ask: ${best_ask}")
+            logger.info(f"   Mid Price: ${market_price}")
             
             symbol_info = await public_client.get_symbol_info(symbol)
             if not symbol_info:
                 logger.error(f"Failed to get symbol info for {symbol}")
                 return
             
+            # Get tick size from price filter (preferred) or fallback
             tick_size = symbol_info.tick_size
+            if symbol_info.price_filter and symbol_info.price_filter.tick_size:
+                tick_size = symbol_info.price_filter.tick_size
             logger.info(f"   Tick size: {tick_size}")
+            
+            # Get step size from lot size filter (preferred) or fallback
+            step_size = symbol_info.step_size
+            min_qty = symbol_info.min_quantity
+            if symbol_info.lot_size_filter:
+                step_size = symbol_info.lot_size_filter.step_size
+                min_qty = symbol_info.lot_size_filter.min_qty
             
             # Calculate order quantity
             quantity = Decimal(str(usdt_amount)) / market_price
-            steps = int(quantity / symbol_info.step_size)
-            quantity = steps * symbol_info.step_size
+            if step_size and step_size > 0:
+                steps = int(quantity / step_size)
+                quantity = steps * step_size
             
-            if quantity < symbol_info.min_order_size:
-                quantity = symbol_info.min_order_size
+            if min_qty and quantity < min_qty:
+                quantity = min_qty
             
             logger.info(f"   Order quantity: {quantity}")
+
         
         # Create trades in parallel
         logger.info(f"\n🎯 Creating trades across {len(accounts)} account(s) in parallel...")
@@ -238,7 +262,8 @@ async def main():
                             symbol=symbol,
                             side=side,
                             quantity=quantity,
-                            market_price=market_price,
+                            best_bid=best_bid,
+                            best_ask=best_ask,
                             tick_size=tick_size,
                             tp_percent=tp_percent,
                             sl_percent=sl_percent,

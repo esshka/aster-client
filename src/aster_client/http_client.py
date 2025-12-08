@@ -83,8 +83,9 @@ class HttpClient:
         timestamp = str(int(time.time() * 1000))
 
         # Prepare parameters for signature
-        if method.upper() == "GET":
-            # For GET requests, signature goes in query params
+        # GET and DELETE use query params, POST/PUT use request body
+        if method.upper() in ["GET", "DELETE"]:
+            # For GET/DELETE requests, signature goes in query params
             auth_params = params.copy()
             auth_params["timestamp"] = timestamp
             auth_params["recvWindow"] = self._config.recv_window
@@ -122,6 +123,7 @@ class HttpClient:
 
         # Add API key header (Binance-style)
         headers["X-MBX-APIKEY"] = self._config.api_key
+
 
     async def _execute_with_retry(
         self,
