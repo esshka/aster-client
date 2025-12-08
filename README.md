@@ -95,9 +95,47 @@ The `PublicClient` implements the Singleton pattern to share cached data across 
 **Orders:**
 - `place_order(order: OrderRequest)` - Place new order
 - `place_bbo_order(symbol, side, quantity, ...)` - Place BBO (Best Bid Offer) order
-- `cancel_order(order_id)` - Cancel existing order
+- `place_bbo_order_with_retry(...)` - Place BBO order with automatic retry on unfilled
+- `cancel_order(symbol, order_id)` - Cancel existing order
 - `get_orders(symbol)` - Get all orders for symbol
-- `get_order(order_id)` - Get specific order details
+- `get_order(symbol, order_id)` - Get specific order details
+
+### BBO Orders
+
+BBO (Best Bid/Offer) orders are limit orders placed at or near the current best bid/ask price, ensuring maker-only execution:
+
+```python
+# Simple BBO order
+response = await client.place_bbo_order(
+    symbol="SOLUSDT",
+    side="buy",
+    quantity=Decimal("0.1"),
+    best_bid=Decimal("134.00"),
+    best_ask=Decimal("134.01"),
+    tick_size=Decimal("0.01"),
+    ticks_distance=0,  # 0 = at best bid/ask, 1 = one tick away
+)
+
+# BBO order with automatic retry
+filled_order = await client.place_bbo_order_with_retry(
+    symbol="SOLUSDT",
+    side="buy",
+    quantity=Decimal("0.1"),
+    tick_size=Decimal("0.01"),
+    ticks_distance=0,
+    max_retries=2,         # Retry up to 2 times if not filled
+    fill_timeout_ms=5000,  # Wait 5 seconds per attempt
+    max_chase_percent=0.1, # Stop if price moves > 0.1%
+    best_bid=Decimal("134.00"),  # Optional: fallback if no WebSocket
+    best_ask=Decimal("134.01"),
+)
+```
+
+**Pricing Logic:**
+- **BUY**: Placed at `best_bid - (tick_size × ticks_distance)`
+- **SELL**: Placed at `best_ask + (tick_size × ticks_distance)`
+
+See [docs/bbo.md](docs/bbo.md) for detailed documentation.
 
 ## Advanced Features
 
@@ -125,15 +163,17 @@ async def create_automated_trade():
         trade = await create_trade(
             client=client,
             symbol="ETHUSDT",
-            side="buy",  # or "sell"
+            side="buy",
             quantity=Decimal("0.1"),
             best_bid=best_bid,
             best_ask=best_ask,
             tick_size=tick_size,
-            tp_percent=1.0,  # 1% take profit
-            sl_percent=0.5,  # 0.5% stop loss
-            fill_timeout=10.0,  # Wait 10s for entry fill (default)
-            poll_interval=0.5,  # Check every 0.5s (default)
+            tp_percent=1.0,          # 1% take profit
+            sl_percent=0.5,          # 0.5% stop loss
+            ticks_distance=0,        # Place at best bid/ask
+            max_retries=2,           # Retry up to 2 times
+            fill_timeout_ms=5000,    # 5 seconds per attempt
+            max_chase_percent=0.1,   # Max 0.1% price chase
         )
         
         if trade.status == "active":
@@ -142,27 +182,25 @@ async def create_automated_trade():
             print(f"TP: {trade.take_profit_order.price}")
             print(f"SL: {trade.stop_loss_order.price}")
         else:
-            print(f"❌ Trade failed: {trade.metadata.get('error')}")
+            print(f"❌ Trade failed: {trade.entry_order.error}")
 
 asyncio.run(create_automated_trade())
 ```
 
 **Features:**
-- **BBO Entry**: Automatically places limit order 1 tick from market price for better fills
-- **Smart Timeout**: Waits up to 10 seconds (configurable) for entry fill, polls every 0.5s
-- **Auto-Cancellation**: Cancels entry order if not filled within timeout
-- **Position Closing**: TP and SL orders use `closePosition=true` to properly close positions
-- **Hedge Mode Support**: Works seamlessly in both One-way and Hedge mode
-- **Calculated Prices**: TP/SL prices automatically calculated from entry fill price
+- **BBO Entry with Retry**: Automatically retries unfilled orders with updated prices
+- **Price Chase Limit**: Stops retrying if market moves beyond configured percentage
+- **Maker-Only TP**: Take profit uses GTX (post-only) limit orders
+- **Stop Loss**: Uses STOP_MARKET with closePosition for guaranteed exits
+- **Hedge Mode Support**: Works in both One-way and Hedge mode
 
 **Trade Workflow:**
-1. Places BBO entry order (limit order 1 tick from market)
-2. Polls order status every 0.5s (waits up to 10s by default)
-3. If timeout, cancels entry order and returns failed trade
-4. Once filled, calculates TP/SL prices from actual fill price
-5. Places TAKE_PROFIT_MARKET order with `closePosition=true`
-6. Places STOP_MARKET order with `closePosition=true`
-7. Returns complete trade object with all order details
+1. Places BBO entry order at best bid/ask (or N ticks away)
+2. Waits for fill, retries with updated price if not filled
+3. Once filled, calculates TP/SL prices from actual fill price
+4. Places LIMIT TP order with GTX (maker-only)
+5. Places STOP_MARKET SL order with closePosition
+6. Returns complete trade object with all order details
 
 ### Multi-Account Parallel Trade Execution via ZeroMQ
 
