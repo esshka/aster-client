@@ -13,6 +13,7 @@ Supported message types:
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -40,15 +41,18 @@ class ZMQTradeListener:
         socket: ZMQ subscriber socket
     """
     
-    def __init__(self, zmq_url: str, topic: str = "", log_dir: str = "logs"):
+    def __init__(self, zmq_url: Optional[str] = None, topic: str = "", log_dir: str = "logs"):
         """
         Initialize the ZMQ listener.
         
         Args:
-            zmq_url: URL of the ZMQ publisher
+            zmq_url: URL of the ZMQ publisher. If None, uses ZMQ_URL env var or default.
             topic: Topic to subscribe to (empty string for all topics)
             log_dir: Directory to store session log files (default: "logs")
         """
+        if zmq_url is None:
+            zmq_url = os.environ.get("ZMQ_URL", "tcp://127.0.0.1:5555")
+            
         self.zmq_url = zmq_url
         self.topic = topic
         self.ctx = zmq.asyncio.Context()

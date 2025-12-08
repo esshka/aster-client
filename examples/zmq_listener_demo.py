@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from dotenv import load_dotenv
 import sys
 import os
 
@@ -16,7 +17,8 @@ logging.basicConfig(
 
 async def main():
     # Connect to the publisher (sender)
-    zmq_url = "tcp://127.0.0.1:5555"
+    load_dotenv()
+    zmq_url = os.getenv("ZMQ_URL", "tcp://127.0.0.1:5555")
     listener = ZMQTradeListener(zmq_url=zmq_url)
     
     try:

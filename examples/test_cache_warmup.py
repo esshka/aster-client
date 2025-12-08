@@ -4,6 +4,8 @@ Test script to verify symbol cache warmup in ZMQ listener.
 
 import asyncio
 import logging
+import os
+from dotenv import load_dotenv
 from aster_client.zmq_listener import ZMQTradeListener
 
 # Configure logging to see cache warmup messages
@@ -19,8 +21,10 @@ async def test_cache_warmup():
     print("Testing Symbol Cache Warmup")
     print("="*60 + "\n")
     
+    load_dotenv()
+    zmq_url = os.getenv("ZMQ_URL", "tcp://127.0.0.1:5555")
     # Create listener
-    listener = ZMQTradeListener(zmq_url="tcp://127.0.0.1:5555", log_dir="logs/test")
+    listener = ZMQTradeListener(zmq_url=zmq_url, log_dir="logs/test")
     
     print("Created ZMQ listener instance")
     print(f"Public client instance: {listener.public_client}")
