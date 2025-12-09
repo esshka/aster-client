@@ -25,6 +25,10 @@ from .models import (
     AccountInfo,
     Position,
     Balance,
+    # Signals
+    SignalMessage,
+    PositionState,
+    PositionSizingConfig,
 )
 from .trades import (
     Trade,
@@ -35,6 +39,8 @@ from .trades import (
     wait_for_order_fill,
 )
 from .zmq_listener import ZMQTradeListener
+from .signal_listener import ZMQSignalListener
+from .account_ws import AccountWebSocket
 
 __all__ = [
     # Main Clients
@@ -59,6 +65,12 @@ __all__ = [
     "calculate_tp_sl_prices",
     "wait_for_order_fill",
     "ZMQTradeListener",
+    # Signal Listener (MEXC-style)
+    "ZMQSignalListener",
+    "AccountWebSocket",
+    "SignalMessage",
+    "PositionState",
+    "PositionSizingConfig",
     # BBO Exceptions
     "BBORetryExhausted",
     "BBOPriceChaseExceeded",
