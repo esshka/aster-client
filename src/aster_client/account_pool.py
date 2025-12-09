@@ -526,6 +526,71 @@ class AccountPool:
         
         return account_results
     
+    async def cancel_all_open_orders_parallel(
+        self,
+        symbol: str,
+    ) -> List[AccountResult[dict]]:
+        """
+        Cancel all open orders for a symbol across all accounts in parallel.
+        
+        This is a convenience method that cancels ALL open orders for a given symbol
+        on each account simultaneously, without needing to specify individual order IDs.
+        
+        Args:
+            symbol: Trading symbol (e.g., "BTCUSDT")
+            
+        Returns:
+            List of AccountResult objects containing cancellation responses
+            
+        Example:
+            # Cancel all BTCUSDT orders on all accounts
+            results = await pool.cancel_all_open_orders_parallel("BTCUSDT")
+            
+            for result in results:
+                if result.success:
+                    print(f"{result.account_id}: All orders cancelled")
+                else:
+                    print(f"{result.account_id}: Failed - {result.error}")
+        """
+        if self._closed:
+            raise RuntimeError("AccountPool is closed")
+        
+        # Create cancellation tasks for each account
+        tasks = []
+        account_ids = []
+        
+        for account_config in self._accounts:
+            client = self._clients[account_config.id]
+            tasks.append(client.cancel_all_open_orders(symbol=symbol))
+            account_ids.append(account_config.id)
+        
+        # Execute in parallel
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Wrap results
+        account_results = []
+        for account_id, result in zip(account_ids, results):
+            if isinstance(result, Exception):
+                account_results.append(
+                    AccountResult(
+                        account_id=account_id,
+                        success=False,
+                        error=result
+                    )
+                )
+                logger.error(f"Cancel all orders failed for {account_id}: {result}")
+            else:
+                account_results.append(
+                    AccountResult(
+                        account_id=account_id,
+                        success=True,
+                        result=result
+                    )
+                )
+                logger.info(f"All orders cancelled for {account_id}")
+        
+        return account_results
+    
     async def close_positions_for_symbol_parallel(
         self,
         symbol: str,

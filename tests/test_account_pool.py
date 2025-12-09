@@ -561,6 +561,27 @@ class TestAccountPoolOrderMethods:
             
             assert len(results) == 2
             assert all(r.success for r in results)
+    
+    @pytest.mark.asyncio
+    async def test_cancel_all_open_orders_parallel(self):
+        """Test canceling all open orders for a symbol in parallel."""
+        accounts = [
+            AccountConfig(id="acc1", api_key="key1key1key1key1key1key1", api_secret="sec1sec1sec1sec1sec1sec1"),
+            AccountConfig(id="acc2", api_key="key2key2key2key2key2key2", api_secret="sec2sec2sec2sec2sec2sec2"),
+        ]
+        
+        async with AccountPool(accounts) as pool:
+            for client in pool._clients.values():
+                client.cancel_all_open_orders = AsyncMock(return_value={"code": 200, "msg": "success"})
+            
+            results = await pool.cancel_all_open_orders_parallel(symbol="BTCUSDT")
+            
+            assert len(results) == 2
+            assert all(r.success for r in results)
+            
+            # Verify cancel_all_open_orders was called with correct symbol
+            for client in pool._clients.values():
+                client.cancel_all_open_orders.assert_called_once_with(symbol="BTCUSDT")
 
 
 class TestAccountPoolEdgeCases:
