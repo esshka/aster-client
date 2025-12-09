@@ -28,7 +28,7 @@ from .constants import (
 from .http_client import HttpClient
 from .models import (
     AccountInfo, Balance, BalanceV2, MarkPrice, OrderRequest, OrderResponse,
-    Position, ConnectionConfig, RetryConfig
+    Position, ConnectionConfig, RetryConfig, ClosePositionResult
 )
 from .monitoring import PerformanceMonitor
 from .session_manager import SessionManager
@@ -433,6 +433,148 @@ class AsterClient:
         return await self._execute_with_monitoring(
             self._api_methods.get_position_mode, "GET", "/positionSide/dual"
         )
+
+    async def close_position_for_symbol(
+        self,
+        symbol: str,
+        tick_size: Decimal,
+        best_bid: Optional[Decimal] = None,
+        best_ask: Optional[Decimal] = None,
+        ticks_distance: int = 0,
+        max_retries: int = 2,
+        fill_timeout_ms: int = 1000,
+        max_chase_percent: float = 0.1,
+    ) -> ClosePositionResult:
+        """
+        Close all positions for a symbol with BBO order and cleanup TP/SL orders.
+        
+        This method:
+        1. Gets the current position for the symbol
+        2. Cancels all open orders for the symbol (cleanup TP/SL)
+        3. Places a BBO order with reduce_only=True to close the position
+        
+        Args:
+            symbol: Trading symbol (e.g., "BTCUSDT")
+            tick_size: Tick size for the symbol (for BBO price calculation)
+            best_bid: Optional best bid price (uses cache if not provided)
+            best_ask: Optional best ask price (uses cache if not provided)
+            ticks_distance: Number of ticks away from best price (default: 0 for aggressive)
+            max_retries: Maximum retry attempts for BBO order (default: 2)
+            fill_timeout_ms: Time to wait for fill before retry (default: 1000)
+            max_chase_percent: Maximum price deviation from original (default: 0.1%)
+            
+        Returns:
+            ClosePositionResult with details about the operation
+        """
+        cancelled_count = 0
+        
+        try:
+            # Step 1: Get current positions
+            positions = await self.get_positions()
+            
+            # Find position for this symbol
+            symbol_position = None
+            for pos in positions:
+                if pos.symbol == symbol and pos.quantity != Decimal("0"):
+                    symbol_position = pos
+                    break
+            
+            # Step 2: Cancel all open orders for the symbol (TP/SL cleanup)
+            try:
+                cancel_result = await self.cancel_all_open_orders(symbol)
+                # Try to extract count from result
+                if isinstance(cancel_result, dict):
+                    cancelled_count = cancel_result.get("count", 1)
+                elif isinstance(cancel_result, list):
+                    cancelled_count = len(cancel_result)
+                else:
+                    cancelled_count = 1  # Assume at least 1 if successful
+                logger.info(f"🧹 Cancelled {cancelled_count} open orders for {symbol}")
+            except Exception as e:
+                # No orders to cancel is not an error
+                if "no open orders" not in str(e).lower():
+                    logger.warning(f"Failed to cancel orders for {symbol}: {e}")
+                cancelled_count = 0
+            
+            # Step 3: Check if there's a position to close
+            if symbol_position is None or symbol_position.quantity == Decimal("0"):
+                logger.info(f"📭 No position to close for {symbol}")
+                return ClosePositionResult(
+                    symbol=symbol,
+                    cancelled_orders_count=cancelled_count,
+                    position_quantity=None,
+                    position_side=None,
+                    close_order=None,
+                    success=True,
+                    error=None
+                )
+            
+            # Step 4: Determine close order side (opposite of position side)
+            position_qty = abs(symbol_position.quantity)
+            position_side = symbol_position.side.lower()
+            
+            # Close side is opposite: long -> sell, short -> buy
+            close_side = "sell" if position_side == "long" else "buy"
+            
+            logger.info(
+                f"📉 Closing {position_side} position for {symbol}: "
+                f"{position_qty} @ close side={close_side}"
+            )
+            
+            # Step 5: Place BBO order with reduce_only to close position
+            try:
+                close_order = await self.place_bbo_order_with_retry(
+                    symbol=symbol,
+                    side=close_side,
+                    quantity=position_qty,
+                    tick_size=tick_size,
+                    ticks_distance=ticks_distance,
+                    max_retries=max_retries,
+                    fill_timeout_ms=fill_timeout_ms,
+                    max_chase_percent=max_chase_percent,
+                    best_bid=best_bid,
+                    best_ask=best_ask,
+                )
+                
+                logger.info(
+                    f"✅ Position closed for {symbol}: "
+                    f"Order ID={close_order.order_id}, "
+                    f"Avg Price={close_order.average_price}"
+                )
+                
+                return ClosePositionResult(
+                    symbol=symbol,
+                    cancelled_orders_count=cancelled_count,
+                    position_quantity=position_qty,
+                    position_side=position_side,
+                    close_order=close_order,
+                    success=True,
+                    error=None
+                )
+                
+            except (BBORetryExhausted, BBOPriceChaseExceeded) as e:
+                logger.error(f"❌ Failed to close position for {symbol}: {e}")
+                return ClosePositionResult(
+                    symbol=symbol,
+                    cancelled_orders_count=cancelled_count,
+                    position_quantity=position_qty,
+                    position_side=position_side,
+                    close_order=None,
+                    success=False,
+                    error=str(e)
+                )
+                
+        except Exception as e:
+            logger.error(f"❌ Error closing position for {symbol}: {e}")
+            return ClosePositionResult(
+                symbol=symbol,
+                cancelled_orders_count=cancelled_count,
+                position_quantity=None,
+                position_side=None,
+                close_order=None,
+                success=False,
+                error=str(e)
+            )
 
     # Monitoring and health
     async def health_check(self) -> bool:

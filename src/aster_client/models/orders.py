@@ -47,3 +47,25 @@ class OrderResponse:
     remaining_quantity: Decimal
     average_price: Optional[Decimal]
     timestamp: int
+
+
+@dataclass(frozen=True)
+class ClosePositionResult:
+    """Result of closing a position with cleanup.
+    
+    Attributes:
+        symbol: Trading symbol
+        cancelled_orders_count: Number of orders cancelled (TP/SL cleanup)
+        position_quantity: Position quantity that was closed (None if no position)
+        position_side: Side of the position (long/short, None if no position)
+        close_order: The order response from the closing trade (None if no position)
+        success: Whether the operation succeeded
+        error: Error message if operation failed
+    """
+    symbol: str
+    cancelled_orders_count: int
+    position_quantity: Optional[Decimal]
+    position_side: Optional[str]
+    close_order: Optional["OrderResponse"]
+    success: bool
+    error: Optional[str] = None

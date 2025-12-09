@@ -58,6 +58,21 @@ Supported message types:
            }
        ]
    }
+
+4. Close Position Message
+   Used to close all positions for a symbol with BBO order and cleanup TP/SL orders.
+   {
+       "type": "close_position",
+       "symbol": "BTCUSDT",
+       "ticks_distance": 0,        # Optional (default: 0 for aggressive close)
+       "accounts": [               # Same account structure as trade message
+           {
+               "id": "acc_1",
+               "api_key": "...",
+               "api_secret": "..."
+           }
+       ]
+   }
 """
 
 import asyncio
@@ -328,6 +343,10 @@ class ZMQTradeListener:
             elif msg_type == "order":
                 await self._process_order_message(message)
                 return
+            
+            elif msg_type == "close_position":
+                await self._process_close_position_message(message)
+                return
 
             else:
                 # Default to trade processing for backward compatibility or explicit "trade" type
@@ -477,6 +496,91 @@ class ZMQTradeListener:
             
             logger.info(f"Order batch completed: {success} ok, {failed} failed")
 
+    async def _process_close_position_message(self, message: Dict[str, Any]):
+        """
+        Process a close position message.
+        
+        Closes all positions for a symbol with BBO order and cleans up TP/SL orders.
+        """
+        symbol = message["symbol"]
+        ticks_distance = int(message.get("ticks_distance", 0))
+        accounts_data = message.get("accounts", [])
+        
+        if not accounts_data:
+            logger.warning("No accounts provided in close_position message")
+            return
+        
+        logger.info(
+            f"🔄 Processing close_position message - Symbol: {symbol}, "
+            f"Accounts: {len(accounts_data)}, Ticks Distance: {ticks_distance}"
+        )
+        
+        # Fetch market data
+        # Get tick size from symbol info
+        symbol_info = await self.public_client.get_symbol_info(symbol)
+        if not symbol_info or not symbol_info.price_filter:
+            logger.error(f"Failed to fetch symbol info for {symbol}")
+            return
+        
+        tick_size = symbol_info.price_filter.tick_size
+        
+        # Get BBO prices
+        best_bid = None
+        best_ask = None
+        bbo = self.bbo_calculator.get_bbo(symbol)
+        if bbo:
+            best_bid, best_ask = bbo
+            logger.info(f"Using real-time BBO for {symbol}: Bid=${best_bid}, Ask=${best_ask}")
+        else:
+            # Fallback to REST API
+            order_book = await self.public_client.get_order_book(symbol, limit=5)
+            if order_book and "bids" in order_book and "asks" in order_book:
+                best_bid = Decimal(order_book["bids"][0][0])
+                best_ask = Decimal(order_book["asks"][0][0])
+                logger.info(f"Using REST BBO for {symbol}: Bid=${best_bid}, Ask=${best_ask}")
+            else:
+                logger.error(f"Failed to fetch order book for {symbol}")
+                return
+        
+        # Prepare account configurations
+        account_configs = []
+        for acc in accounts_data:
+            config = AccountConfig(
+                id=acc["id"],
+                api_key=acc["api_key"],
+                api_secret=acc["api_secret"],
+                simulation=acc.get("simulation", False)
+            )
+            account_configs.append(config)
+        
+        # Execute close positions in parallel
+        async with AccountPool(account_configs) as pool:
+            results = await pool.close_positions_for_symbol_parallel(
+                symbol=symbol,
+                tick_size=tick_size,
+                best_bid=best_bid,
+                best_ask=best_ask,
+                ticks_distance=ticks_distance,
+            )
+            
+            # Log summary
+            success_count = sum(1 for r in results if r.success)
+            failed_count = len(results) - success_count
+            
+            total_cancelled = sum(
+                r.result.cancelled_orders_count for r in results 
+                if r.success and r.result
+            )
+            total_closed = sum(
+                1 for r in results 
+                if r.success and r.result and r.result.close_order
+            )
+            
+            logger.info(
+                f"✅ Close position batch completed - Symbol: {symbol}, "
+                f"Accounts: {len(results)}, Success: {success_count}, Failed: {failed_count}, "
+                f"Positions Closed: {total_closed}, Orders Cancelled: {total_cancelled}"
+            )
 
     async def _process_trade_message(self, message: Dict[str, Any]):
         """

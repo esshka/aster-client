@@ -11,7 +11,7 @@ from unittest.mock import Mock, AsyncMock, patch, MagicMock
 from aster_client.account_pool import AccountPool, AccountConfig, AccountResult
 from aster_client.models import (
     AccountInfo, Balance, Position, OrderRequest, OrderResponse,
-    ConnectionConfig, RetryConfig
+    ConnectionConfig, RetryConfig, ClosePositionResult
 )
 
 
@@ -605,3 +605,143 @@ class TestAccountPoolEdgeCases:
             assert results[0].success is True
             assert results[1].success is False
             assert results[2].success is True
+
+
+class TestClosePositionForSymbol:
+    """Test close position functionality."""
+    
+    @pytest.mark.asyncio
+    async def test_close_position_no_position(self):
+        """Test when there's no position to close."""
+        accounts = [
+            AccountConfig(id="acc1", api_key="key1key1key1key1key1key1", api_secret="sec1sec1sec1sec1sec1sec1"),
+        ]
+        
+        # Create mock position (empty)
+        mock_close_result = ClosePositionResult(
+            symbol="BTCUSDT",
+            cancelled_orders_count=2,
+            position_quantity=None,
+            position_side=None,
+            close_order=None,
+            success=True,
+            error=None
+        )
+        
+        async with AccountPool(accounts) as pool:
+            for client in pool._clients.values():
+                client.close_position_for_symbol = AsyncMock(return_value=mock_close_result)
+            
+            results = await pool.close_positions_for_symbol_parallel(
+                symbol="BTCUSDT",
+                tick_size=Decimal("0.1"),
+            )
+            
+            assert len(results) == 1
+            assert results[0].success is True
+            assert results[0].result.cancelled_orders_count == 2
+            assert results[0].result.position_quantity is None
+            assert results[0].result.close_order is None
+    
+    @pytest.mark.asyncio
+    async def test_close_position_with_position(self):
+        """Test closing an existing position."""
+        accounts = [
+            AccountConfig(id="acc1", api_key="key1key1key1key1key1key1", api_secret="sec1sec1sec1sec1sec1sec1"),
+        ]
+        
+        mock_order = Mock(spec=OrderResponse)
+        mock_order.order_id = "123456"
+        mock_order.average_price = Decimal("50000.00")
+        
+        mock_close_result = ClosePositionResult(
+            symbol="BTCUSDT",
+            cancelled_orders_count=3,
+            position_quantity=Decimal("0.05"),
+            position_side="long",
+            close_order=mock_order,
+            success=True,
+            error=None
+        )
+        
+        async with AccountPool(accounts) as pool:
+            for client in pool._clients.values():
+                client.close_position_for_symbol = AsyncMock(return_value=mock_close_result)
+            
+            results = await pool.close_positions_for_symbol_parallel(
+                symbol="BTCUSDT",
+                tick_size=Decimal("0.1"),
+                best_bid=Decimal("49999.0"),
+                best_ask=Decimal("50001.0"),
+            )
+            
+            assert len(results) == 1
+            assert results[0].success is True
+            assert results[0].result.position_quantity == Decimal("0.05")
+            assert results[0].result.position_side == "long"
+            assert results[0].result.close_order is not None
+    
+    @pytest.mark.asyncio
+    async def test_close_position_parallel_multiple_accounts(self):
+        """Test closing positions across multiple accounts."""
+        accounts = [
+            AccountConfig(id="acc1", api_key="key1key1key1key1key1key1", api_secret="sec1sec1sec1sec1sec1sec1"),
+            AccountConfig(id="acc2", api_key="key2key2key2key2key2key2", api_secret="sec2sec2sec2sec2sec2sec2"),
+        ]
+        
+        mock_order = Mock(spec=OrderResponse)
+        mock_order.order_id = "123456"
+        mock_order.average_price = Decimal("50000.00")
+        
+        mock_close_result = ClosePositionResult(
+            symbol="SOLUSDT",
+            cancelled_orders_count=2,
+            position_quantity=Decimal("10.0"),
+            position_side="short",
+            close_order=mock_order,
+            success=True,
+            error=None
+        )
+        
+        async with AccountPool(accounts) as pool:
+            for client in pool._clients.values():
+                client.close_position_for_symbol = AsyncMock(return_value=mock_close_result)
+            
+            results = await pool.close_positions_for_symbol_parallel(
+                symbol="SOLUSDT",
+                tick_size=Decimal("0.01"),
+            )
+            
+            assert len(results) == 2
+            assert all(r.success for r in results)
+            assert all(r.result.position_side == "short" for r in results)
+    
+    @pytest.mark.asyncio
+    async def test_close_position_failure(self):
+        """Test handling of close position failure."""
+        accounts = [
+            AccountConfig(id="acc1", api_key="key1key1key1key1key1key1", api_secret="sec1sec1sec1sec1sec1sec1"),
+        ]
+        
+        mock_close_result = ClosePositionResult(
+            symbol="BTCUSDT",
+            cancelled_orders_count=1,
+            position_quantity=Decimal("0.1"),
+            position_side="long",
+            close_order=None,
+            success=False,
+            error="BBO order not filled after 3 attempts"
+        )
+        
+        async with AccountPool(accounts) as pool:
+            for client in pool._clients.values():
+                client.close_position_for_symbol = AsyncMock(return_value=mock_close_result)
+            
+            results = await pool.close_positions_for_symbol_parallel(
+                symbol="BTCUSDT",
+                tick_size=Decimal("0.1"),
+            )
+            
+            assert len(results) == 1
+            assert results[0].success is False
+            assert results[0].result.error == "BBO order not filled after 3 attempts"

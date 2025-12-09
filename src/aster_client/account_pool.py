@@ -30,7 +30,7 @@ from typing import List, Optional, Callable, Any, TypeVar, Generic
 from .account_client import AsterClient
 from .models import (
     ConnectionConfig, RetryConfig, OrderRequest, OrderResponse,
-    AccountInfo, Position, Balance, BalanceV2
+    AccountInfo, Position, Balance, BalanceV2, ClosePositionResult
 )
 
 logger = logging.getLogger(__name__)
@@ -523,6 +523,100 @@ class AccountPool:
                         result=result
                     )
                 )
+        
+        return account_results
+    
+    async def close_positions_for_symbol_parallel(
+        self,
+        symbol: str,
+        tick_size: Decimal,
+        best_bid: Optional[Decimal] = None,
+        best_ask: Optional[Decimal] = None,
+        ticks_distance: int = 0,
+        max_retries: int = 2,
+        fill_timeout_ms: int = 1000,
+        max_chase_percent: float = 0.1,
+    ) -> List[AccountResult[ClosePositionResult]]:
+        """
+        Close positions for a symbol across all accounts in parallel.
+        
+        This method executes close_position_for_symbol on each account simultaneously,
+        cancelling all open orders (TP/SL) and closing positions with BBO orders.
+        
+        Args:
+            symbol: Trading symbol (e.g., "BTCUSDT")
+            tick_size: Tick size for the symbol (for BBO price calculation)
+            best_bid: Optional best bid price (uses cache if not provided)
+            best_ask: Optional best ask price (uses cache if not provided)
+            ticks_distance: Number of ticks away from best price (default: 0)
+            max_retries: Maximum retry attempts for BBO order (default: 2)
+            fill_timeout_ms: Time to wait for fill before retry (default: 1000)
+            max_chase_percent: Maximum price deviation from original (default: 0.1%)
+            
+        Returns:
+            List of AccountResult objects containing ClosePositionResult for each account
+        """
+        if self._closed:
+            raise RuntimeError("AccountPool is closed")
+        
+        # Create close position tasks for each account
+        tasks = []
+        account_ids = []
+        
+        for account_config in self._accounts:
+            client = self._clients[account_config.id]
+            tasks.append(
+                client.close_position_for_symbol(
+                    symbol=symbol,
+                    tick_size=tick_size,
+                    best_bid=best_bid,
+                    best_ask=best_ask,
+                    ticks_distance=ticks_distance,
+                    max_retries=max_retries,
+                    fill_timeout_ms=fill_timeout_ms,
+                    max_chase_percent=max_chase_percent,
+                )
+            )
+            account_ids.append(account_config.id)
+        
+        # Execute in parallel
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Wrap results
+        account_results = []
+        for account_id, result in zip(account_ids, results):
+            if isinstance(result, Exception):
+                account_results.append(
+                    AccountResult(
+                        account_id=account_id,
+                        success=False,
+                        error=result
+                    )
+                )
+                logger.error(f"Close position failed for {account_id}: {result}")
+            else:
+                account_results.append(
+                    AccountResult(
+                        account_id=account_id,
+                        success=result.success,
+                        result=result,
+                        error=Exception(result.error) if result.error else None
+                    )
+                )
+                if result.success:
+                    if result.close_order:
+                        logger.info(
+                            f"Position closed for {account_id}: "
+                            f"Qty={result.position_quantity}, "
+                            f"Cancelled={result.cancelled_orders_count} orders"
+                        )
+                    else:
+                        logger.info(
+                            f"No position to close for {account_id}, "
+                            f"cancelled {result.cancelled_orders_count} orders"
+                        )
+                else:
+                    logger.error(f"Close position failed for {account_id}: {result.error}")
         
         return account_results
     
