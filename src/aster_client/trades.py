@@ -40,7 +40,7 @@ import time
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_DOWN
 from enum import Enum
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Union
 from datetime import datetime, timezone
 
 if TYPE_CHECKING:
@@ -84,10 +84,10 @@ class Trade:
         symbol: Trading symbol (e.g., "ETHUSDT")
         side: Order side ("buy" or "sell")
         entry_order: BBO entry order details
-        take_profit_order: Take profit order details
+        take_profit_orders: List of take profit order details (up to 5)
         stop_loss_order: Stop loss order details
         status: Current trade status
-        tp_percent: Take profit percentage (e.g., 1.0 for 1%)
+        tp_percents: List of take profit percentages (e.g., [1.0, 2.0] for 1% and 2%)
         sl_percent: Stop loss percentage (e.g., 0.5 for 0.5%)
         created_at: ISO timestamp when trade was created
         filled_at: ISO timestamp when entry was filled
@@ -98,10 +98,10 @@ class Trade:
     symbol: str
     side: str
     entry_order: TradeOrder = field(default_factory=TradeOrder)
-    take_profit_order: TradeOrder = field(default_factory=TradeOrder)
+    take_profit_orders: list = field(default_factory=list)  # List of TradeOrder
     stop_loss_order: TradeOrder = field(default_factory=TradeOrder)
     status: TradeStatus = TradeStatus.PENDING
-    tp_percent: Optional[float] = None
+    tp_percents: Optional[list] = None  # List of float percentages
     sl_percent: Optional[float] = None
     created_at: Optional[str] = None
     filled_at: Optional[str] = None
@@ -110,12 +110,23 @@ class Trade:
 
     def to_dict(self) -> dict:
         """Convert trade to dictionary for serialization."""
+        tp_orders_list = []
+        for tp_order in self.take_profit_orders:
+            tp_orders_list.append({
+                "order_id": tp_order.order_id,
+                "price": str(tp_order.price) if tp_order.price else None,
+                "size": str(tp_order.size) if tp_order.size else None,
+                "status": tp_order.status,
+                "error": tp_order.error,
+                "placed_at": tp_order.placed_at,
+            })
+        
         return {
             "trade_id": self.trade_id,
             "symbol": self.symbol,
             "side": self.side,
             "status": self.status.value,
-            "tp_percent": self.tp_percent,
+            "tp_percents": self.tp_percents,
             "sl_percent": self.sl_percent,
             "created_at": self.created_at,
             "filled_at": self.filled_at,
@@ -129,14 +140,7 @@ class Trade:
                 "placed_at": self.entry_order.placed_at,
                 "filled_at": self.entry_order.filled_at,
             },
-            "take_profit_order": {
-                "order_id": self.take_profit_order.order_id,
-                "price": str(self.take_profit_order.price) if self.take_profit_order.price else None,
-                "size": str(self.take_profit_order.size) if self.take_profit_order.size else None,
-                "status": self.take_profit_order.status,
-                "error": self.take_profit_order.error,
-                "placed_at": self.take_profit_order.placed_at,
-            },
+            "take_profit_orders": tp_orders_list,
             "stop_loss_order": {
                 "order_id": self.stop_loss_order.order_id,
                 "price": str(self.stop_loss_order.price) if self.stop_loss_order.price else None,
@@ -152,89 +156,77 @@ class Trade:
 def calculate_tp_sl_prices(
     entry_price: Decimal,
     side: str,
-    tp_percent: Optional[float],
+    tp_percents: Optional[list],
     sl_percent: float,
     tick_size: Decimal,
-) -> tuple[Optional[Decimal], Decimal]:
+) -> tuple[list, Decimal]:
     """
     Calculate take profit and stop loss prices from entry price and percentage offsets.
     
     Args:
         entry_price: Entry fill price
         side: Order side ("buy" or "sell")
-        tp_percent: Take profit percentage (e.g., 1.0 for 1%), or None
+        tp_percents: List of take profit percentages (e.g., [1.0, 2.0] for 1% and 2%), or None/empty for no TPs
         sl_percent: Stop loss percentage (e.g., 0.5 for 0.5%)
         tick_size: Tick size for price rounding
         
     Returns:
-        Tuple of (tp_price, sl_price) rounded to tick size. tp_price can be None.
+        Tuple of (tp_prices_list, sl_price) rounded to tick size. tp_prices_list can be empty.
         
     Raises:
         ValueError: If parameters are invalid or TP/SL don't satisfy constraints
         
     Examples:
-        >>> calculate_tp_sl_prices(Decimal("3500"), "buy", 1.0, 0.5, Decimal("0.01"))
-        (Decimal("3535.00"), Decimal("3482.50"))
+        >>> calculate_tp_sl_prices(Decimal("3500"), "buy", [1.0, 2.0], 0.5, Decimal("0.01"))
+        ([Decimal("3535.00"), Decimal("3570.00")], Decimal("3482.50"))
         
-        >>> calculate_tp_sl_prices(Decimal("3500"), "sell", 1.0, 0.5, Decimal("0.01"))
-        (Decimal("3465.00"), Decimal("3517.50"))
+        >>> calculate_tp_sl_prices(Decimal("3500"), "sell", [1.0], 0.5, Decimal("0.01"))
+        ([Decimal("3465.00")], Decimal("3517.50"))
     """
     if entry_price <= 0:
         raise ValueError(f"Entry price must be positive, got {entry_price}")
     if tick_size <= 0:
         raise ValueError(f"Tick size must be positive, got {tick_size}")
-    if tp_percent is not None and tp_percent <= 0:
-        raise ValueError(f"TP percent must be positive, got {tp_percent}")
     if sl_percent <= 0:
         raise ValueError(f"SL percent must be positive, got {sl_percent}")
+    
+    # Normalize tp_percents to a list
+    if tp_percents is None:
+        tp_percents = []
+    elif not isinstance(tp_percents, list):
+        tp_percents = [tp_percents]
+    
+    # Validate TP percents
+    if len(tp_percents) > 5:
+        raise ValueError(f"Maximum 5 TP levels allowed, got {len(tp_percents)}")
+    for i, tp_pct in enumerate(tp_percents):
+        if tp_pct <= 0:
+            raise ValueError(f"TP percent at index {i} must be positive, got {tp_pct}")
     
     side = side.lower()
     if side not in ["buy", "sell"]:
         raise ValueError(f"Side must be 'buy' or 'sell', got '{side}'")
     
-    # Calculate raw prices
-    sl_multiplier = Decimal(str(1 - sl_percent / 100))
-    tp_price = None
-    
-    if tp_percent is not None:
-        tp_multiplier = Decimal(str(1 + tp_percent / 100))
+    tp_prices = []
     
     if side == "buy":
         # For BUY: TP is above entry, SL is below entry
-        if tp_percent is not None:
+        for tp_percent in tp_percents:
+            tp_multiplier = Decimal(str(1 + tp_percent / 100))
             tp_price_raw = entry_price * tp_multiplier
             tp_price = _round_to_tick(tp_price_raw, tick_size)
+            tp_prices.append(tp_price)
             
+        sl_multiplier = Decimal(str(1 - sl_percent / 100))
         sl_price_raw = entry_price * sl_multiplier
         sl_price = _round_to_tick(sl_price_raw, tick_size)
     else:  # sell
         # For SELL: TP is below entry, SL is above entry
-        if tp_percent is not None:
-            # For sell, tp_multiplier logic in original code was:
-            # tp_price_raw = entry_price * sl_multiplier  <-- WAIT, I see a bug in the original code?
-            # Original code:
-            # tp_multiplier = Decimal(str(1 + tp_percent / 100))
-            # sl_multiplier = Decimal(str(1 - sl_percent / 100))
-            # ...
-            # else: # sell
-            #   tp_price_raw = entry_price * sl_multiplier  <-- WRONG?
-            #   sl_price_raw = entry_price * tp_multiplier  <-- WRONG?
-            
-            # Let's check the logic for SELL.
-            # Sell @ 100. TP 1% -> Target 99. SL 1% -> Target 101.
-            # Original 'tp_multiplier' is 1.01. 'sl_multiplier' is 0.99.
-            # If sell:
-            # tp_price should be entry * (1 - tp_percent/100) -> which is roughly entry * sl_multiplier IF tp_percent == sl_percent. But they are different variables.
-            # So the original code seems to have mixed up multipliers for SELL or assumed simple symmetry which is wrong if percentages differ.
-            # Let's correct/implement properly here.
-            
-            # For SELL:
-            # TP price = Entry * (1 - TP%)
-            # SL price = Entry * (1 + SL%)
-            
+        for tp_percent in tp_percents:
             tp_sell_mult = Decimal(str(1 - tp_percent / 100))
             tp_price_raw = entry_price * tp_sell_mult
             tp_price = _round_to_tick(tp_price_raw, tick_size)
+            tp_prices.append(tp_price)
             
         sl_sell_mult = Decimal(str(1 + sl_percent / 100))
         sl_price_raw = entry_price * sl_sell_mult
@@ -242,32 +234,27 @@ def calculate_tp_sl_prices(
     
     # Validate constraints
     if side == "buy":
-        if tp_price is not None and not (entry_price < tp_price):
-             # Basic sanity check only, strict range check below
-             pass
-             
-        if not (sl_price < entry_price):
-             pass # Will be caught by logic or implicit
-             
-        if tp_price is not None and not (sl_price < entry_price < tp_price):
-             raise ValueError(
-                f"For BUY orders: SL < entry < TP required. "
-                f"Got SL={sl_price}, entry={entry_price}, TP={tp_price}"
-            )
+        for i, tp_price in enumerate(tp_prices):
+            if not (sl_price < entry_price < tp_price):
+                raise ValueError(
+                    f"For BUY orders: SL < entry < TP required. "
+                    f"Got SL={sl_price}, entry={entry_price}, TP[{i}]={tp_price}"
+                )
     else:  # sell
-        if tp_price is not None and not (tp_price < entry_price < sl_price):
-            raise ValueError(
-                f"For SELL orders: TP < entry < SL required. "
-                f"Got TP={tp_price}, entry={entry_price}, SL={sl_price}"
-            )
+        for i, tp_price in enumerate(tp_prices):
+            if not (tp_price < entry_price < sl_price):
+                raise ValueError(
+                    f"For SELL orders: TP < entry < SL required. "
+                    f"Got TP[{i}]={tp_price}, entry={entry_price}, SL={sl_price}"
+                )
     
-    tp_str = f"TP={tp_price} (+{tp_percent}%)" if tp_price else "TP=None"
+    tp_str = f"TPs={tp_prices}" if tp_prices else "TPs=[]"
     logger.debug(
         f"Calculated TP/SL for {side.upper()} @ {entry_price}: "
         f"{tp_str}, SL={sl_price} (-{sl_percent}%)"
     )
     
-    return tp_price, sl_price
+    return tp_prices, sl_price
 
 
 def _round_to_tick(price: Decimal, tick_size: Decimal) -> Decimal:
@@ -357,22 +344,23 @@ async def create_trade(
     best_bid: Decimal,
     best_ask: Decimal,
     tick_size: Decimal,
-    tp_percent: Optional[float],
-    sl_percent: float,
+    tp_percents: Optional[Union[float, list]] = None,
+    sl_percent: float = 0.5,
     ticks_distance: int = 0,
     max_retries: int = 2,
     fill_timeout_ms: int = 1000,
     max_chase_percent: float = 0.1,
     position_side: Optional[str] = None,
+    vol_size: Optional[Decimal] = None,
 ) -> Trade:
     """
-    Create a complete trade with BBO entry, take profit, and stop loss orders.
+    Create a complete trade with BBO entry, take profit(s), and stop loss orders.
     
     Workflow:
         1. Place BBO entry order with automatic retry
         2. Wait for entry fill with automatic price updates
         3. Calculate TP/SL prices from fill price
-        4. Place TP order (LIMIT with reduceOnly=True)
+        4. Place TP order(s) (LIMIT with reduceOnly=True) - quantity split equally among TPs
         5. Place SL order (STOP_MARKET with closePosition=True)
     
     Args:
@@ -383,21 +371,64 @@ async def create_trade(
         best_bid: Current best bid price
         best_ask: Current best ask price
         tick_size: Tick size for the symbol
-        tp_percent: Take profit percentage (e.g., 1.0 for 1%)
+        tp_percents: Take profit configuration(s). Supports multiple formats:
+                    - Single float: 1.0 (TP at +1%, full quantity)
+                    - List of floats: [0.5, 1.0, 1.5] (3 TPs, equal quantity split)
+                    - List of [price_pct, amount_frac]: [[0.5, 0.5], [1.0, 0.5]] 
+                      (TP1 at +0.5% with 50% qty, TP2 at +1.0% with 50% qty)
         sl_percent: Stop loss percentage (e.g., 0.5 for 0.5%)
         ticks_distance: Distance in ticks for BBO order (default: 0 = at best bid/ask)
         max_retries: Maximum retry attempts for BBO order (default: 2)
         fill_timeout_ms: Time to wait for fill before retry in ms (default: 1000)
         max_chase_percent: Maximum price deviation from original (default: 0.1%)
         position_side: Position side for hedge mode ("LONG" or "SHORT")
+        vol_size: Minimum volume size for the symbol (used for quantity rounding)
         
     Returns:
         Trade object with all order details
         
     Raises:
-        ValueError: If parameters are invalid
+        ValueError: If parameters are invalid (e.g., more than 5 TPs)
         Exception: If order placement fails
     """
+    # Normalize tp_percents to list of (price_pct, amount_frac) tuples
+    # Supports:
+    #   - None -> []
+    #   - 1.0 -> [(1.0, 1.0)]
+    #   - [0.5, 1.0] -> [(0.5, 0.5), (1.0, 0.5)]  (equal split)
+    #   - [[0.5, 0.3], [1.0, 0.7]] -> [(0.5, 0.3), (1.0, 0.7)]  (custom amounts)
+    tp_configs: list[tuple[float, float]] = []
+    
+    if tp_percents is None:
+        pass  # Empty list
+    elif isinstance(tp_percents, (int, float)):
+        # Single TP with full quantity
+        tp_configs = [(float(tp_percents), 1.0)]
+    elif isinstance(tp_percents, list) and len(tp_percents) > 0:
+        # Check if it's a list of [price, amount] pairs or just prices
+        first_item = tp_percents[0]
+        if isinstance(first_item, (list, tuple)) and len(first_item) == 2:
+            # Format: [[price_pct, amount_frac], ...]
+            tp_configs = [(float(p[0]), float(p[1])) for p in tp_percents]
+        else:
+            # Format: [price_pct, ...] - equal split
+            num_tps = len(tp_percents)
+            equal_frac = 1.0 / num_tps
+            tp_configs = [(float(p), equal_frac) for p in tp_percents]
+    
+    # Validate TP count
+    if len(tp_configs) > 5:
+        raise ValueError(f"Maximum 5 TP levels allowed, got {len(tp_configs)}")
+    
+    # Validate amount fractions sum to ~1.0 (with tolerance for floating point)
+    if tp_configs:
+        total_frac = sum(frac for _, frac in tp_configs)
+        if abs(total_frac - 1.0) > 0.01:
+            raise ValueError(f"TP amount fractions must sum to 1.0, got {total_frac}")
+    
+    # Extract just the percentages for Trade object and calculate_tp_sl_prices
+    tp_percents_list = [pct for pct, _ in tp_configs]
+    
     # Generate trade ID
     trade_id = f"trade_{symbol}_{side}_{int(time.time() * 1000)}"
     
@@ -406,7 +437,7 @@ async def create_trade(
         trade_id=trade_id,
         symbol=symbol,
         side=side.lower(),
-        tp_percent=tp_percent,
+        tp_percents=tp_percents_list if tp_percents_list else None,
         sl_percent=sl_percent,
         created_at=datetime.now(timezone.utc).isoformat(),
         metadata={
@@ -422,7 +453,10 @@ async def create_trade(
     
     try:
         # Step 1: Place BBO entry order with retry
-        tp_desc = f"TP: +{tp_percent}%" if tp_percent is not None else "TP: None"
+        if tp_percents_list:
+            tp_desc = f"TPs: {[f'+{p}%' for p in tp_percents_list]}"
+        else:
+            tp_desc = "TPs: None"
         logger.info(f"📊 Creating trade {trade_id}: {symbol} {side.upper()} {quantity}")
         logger.info(f"   {tp_desc}, SL: -{sl_percent}%")
         logger.info(f"   BBO: ticks_distance={ticks_distance}, max_retries={max_retries}, timeout={fill_timeout_ms}ms, chase={max_chase_percent}%")
@@ -472,96 +506,148 @@ async def create_trade(
 
         
         # Step 3: Calculate TP/SL prices
-        tp_price, sl_price = calculate_tp_sl_prices(
+        tp_prices, sl_price = calculate_tp_sl_prices(
             entry_price=entry_fill_price,
             side=side,
-            tp_percent=tp_percent,
+            tp_percents=tp_percents_list,
             sl_percent=sl_percent,
             tick_size=tick_size,
         )
         
-        logger.info(f"📈 TP: {tp_price}, SL: ${sl_price}")
+        logger.info(f"📈 TPs: {tp_prices}, SL: ${sl_price}")
         
-        # Step 4: Place take profit order (LIMIT with GTX for post-only maker order)
-        if tp_price is not None:
-            # For BUY entry (LONG position): SELL order to close with positionSide=LONG
-            # For SELL entry (SHORT position): BUY order to close with positionSide=SHORT
-            tp_side = "sell" if side.lower() == "buy" else "buy"
-            
-            # When using reduceOnly, positionSide must match the position being closed
-            # For a LONG position, we use SELL with positionSide=LONG
-            tp_position_side = position_side if position_side else ("LONG" if side.lower() == "buy" else "SHORT")
-            
-            tp_request = OrderRequest(
-                symbol=symbol,
-                side=tp_side,
-                order_type="limit",
-                quantity=quantity,  # Same quantity as entry
-                price=tp_price,     # Limit price
-                time_in_force="GTX",  # Post-only (maker only)
-                position_side=tp_position_side,  # Position being closed
-            )
-
-            
-            try:
-                tp_response = await client.place_order(tp_request)
-                trade.take_profit_order.order_id = tp_response.order_id
-                trade.take_profit_order.price = tp_price
-                trade.take_profit_order.size = quantity
-                trade.take_profit_order.status = tp_response.status
-                trade.take_profit_order.placed_at = datetime.now(timezone.utc).isoformat()
-                logger.info(f"✅ Take profit order placed: {tp_response.order_id} @ ${tp_price}")
-            except Exception as e:
-                logger.error(f"❌ Failed to place TP order: {e}")
-                trade.take_profit_order.error = str(e)
-
-        else:
-             logger.info("ℹ️ TP percent is None, skipping TP order.")        
-        # Step 5: Place stop loss order (STOP_MARKET with closePosition=true)
+        # Step 4 & 5: Place all TP orders and SL order in parallel
         # For BUY entry (LONG position): SELL order to close with positionSide=LONG
         # For SELL entry (SHORT position): BUY order to close with positionSide=SHORT
-        sl_side = "sell" if side.lower() == "buy" else "buy"
+        exit_side = "sell" if side.lower() == "buy" else "buy"
+        exit_position_side = position_side if position_side else ("LONG" if side.lower() == "buy" else "SHORT")
         
-        # When using closePosition, positionSide must match the position being closed
-        sl_position_side = position_side if position_side else ("LONG" if side.lower() == "buy" else "SHORT")
+        # Prepare all order requests
+        order_tasks = []
+        tp_quantities = []
         
+        # Prepare TP orders
+        if tp_prices:
+            num_tps = len(tp_prices)
+            
+            # Calculate quantities based on tp_configs amount fractions
+            for i, (_, amount_frac) in enumerate(tp_configs):
+                tp_qty = quantity * Decimal(str(amount_frac))
+                
+                # Round quantity if vol_size is provided
+                if vol_size:
+                    tp_qty = (tp_qty / vol_size).quantize(
+                        Decimal("1"), rounding=ROUND_DOWN
+                    ) * vol_size
+                
+                tp_quantities.append(tp_qty)
+            
+            # Adjust last TP to use remainder (handle rounding)
+            placed_qty = sum(tp_quantities[:-1]) if len(tp_quantities) > 1 else Decimal("0")
+            tp_quantities[-1] = quantity - placed_qty
+            
+            logger.info(f"   TP quantities: {[str(q) for q in tp_quantities]}")
+            
+            
+            # Create TP order tasks
+            for i, (tp_price, tp_quantity) in enumerate(zip(tp_prices, tp_quantities)):
+                tp_request = OrderRequest(
+                    symbol=symbol,
+                    side=exit_side,
+                    order_type="limit",
+                    quantity=tp_quantity,
+                    price=tp_price,
+                    time_in_force="GTX",
+                    position_side=exit_position_side,
+                )
+                order_tasks.append(("TP", i, tp_price, tp_quantity, client.place_order(tp_request)))
+        else:
+            logger.info("ℹ️ No TP percents provided, skipping TP orders.")
+        
+        # Prepare SL order
         sl_request = OrderRequest(
             symbol=symbol,
-            side=sl_side,
+            side=exit_side,
             order_type="stop_market",
-            quantity=Decimal("0"),  # Required by dataclass but will be ignored by API
-            stop_price=sl_price,  # Stop loss trigger price
-            position_side=sl_position_side,  # Position being closed
-            close_position=True,  # Close entire position when SL is hit
+            quantity=Decimal("0"),
+            stop_price=sl_price,
+            position_side=exit_position_side,
+            close_position=True,
+        )
+        order_tasks.append(("SL", 0, sl_price, quantity, client.place_order(sl_request)))
+        
+        # Execute all orders in parallel
+        logger.info(f"   Placing {len(order_tasks)} orders in parallel...")
+        
+        async def execute_order(order_type, index, price, qty, coro):
+            """Execute a single order and return result."""
+            try:
+                response = await coro
+                return (order_type, index, price, qty, response, None)
+            except Exception as e:
+                return (order_type, index, price, qty, None, e)
+        
+        results = await asyncio.gather(
+            *[execute_order(ot, idx, p, q, coro) for ot, idx, p, q, coro in order_tasks]
         )
         
-        try:
-            sl_response = await client.place_order(sl_request)
-            trade.stop_loss_order.order_id = sl_response.order_id
-            trade.stop_loss_order.price = sl_price
-            trade.stop_loss_order.size = quantity
-            trade.stop_loss_order.status = sl_response.status
-            trade.stop_loss_order.placed_at = datetime.now(timezone.utc).isoformat()
-            logger.info(f"✅ Stop loss order placed: {sl_response.order_id} @ ${sl_price}")
-        except Exception as e:
-            logger.error(f"❌ Failed to place SL order: {e}")
-            trade.stop_loss_order.error = str(e)
+        # Process results
+        placed_at = datetime.now(timezone.utc).isoformat()
+        for order_type, index, price, qty, response, error in results:
+            if order_type == "TP":
+                tp_order = TradeOrder()
+                if response:
+                    tp_order.order_id = response.order_id
+                    tp_order.price = price
+                    tp_order.size = qty
+                    tp_order.status = response.status
+                    tp_order.placed_at = placed_at
+                    logger.info(f"✅ TP[{index+1}] order placed: {response.order_id} @ ${price} ({qty})")
+                else:
+                    tp_order.price = price
+                    tp_order.size = qty
+                    tp_order.error = str(error)
+                    logger.error(f"❌ Failed to place TP[{index+1}] order: {error}")
+                trade.take_profit_orders.append(tp_order)
+            else:  # SL
+                if response:
+                    trade.stop_loss_order.order_id = response.order_id
+                    trade.stop_loss_order.price = price
+                    trade.stop_loss_order.size = qty
+                    trade.stop_loss_order.status = response.status
+                    trade.stop_loss_order.placed_at = placed_at
+                    logger.info(f"✅ Stop loss order placed: {response.order_id} @ ${price}")
+                else:
+                    trade.stop_loss_order.price = price
+                    trade.stop_loss_order.error = str(error)
+                    logger.error(f"❌ Failed to place SL order: {error}")
         
         # Update trade status
-        tp_ok = (trade.take_profit_order.order_id is not None) or (tp_percent is None)
+        # TP is OK if no TPs were requested, or at least one TP was placed successfully
+        if not tp_percents_list:
+            tp_ok = True
+        else:
+            tp_ok = any(tp.order_id is not None for tp in trade.take_profit_orders)
         sl_ok = (trade.stop_loss_order.order_id is not None)
+        
+        # Check for partial TP failures
+        tp_failures = sum(1 for tp in trade.take_profit_orders if tp.error is not None)
+        total_tps = len(trade.take_profit_orders)
 
         if tp_ok and sl_ok:
             trade.status = TradeStatus.ACTIVE
-            logger.info(f"🎉 Trade {trade_id} is now ACTIVE")
+            if tp_failures > 0:
+                logger.warning(f"🎉 Trade {trade_id} is now ACTIVE ({total_tps - tp_failures}/{total_tps} TPs placed)")
+            else:
+                logger.info(f"🎉 Trade {trade_id} is now ACTIVE")
         elif not sl_ok: 
             # SL is required
             trade.status = TradeStatus.ACTIVE  # Partially active (only TP placed or neither if TP missing too)
             logger.warning(f"⚠️  Trade {trade_id} partially active (missing SL)")
         elif not tp_ok:
-            # TP was requested but failed
+            # TP was requested but all failed
             trade.status = TradeStatus.ACTIVE
-            logger.warning(f"⚠️  Trade {trade_id} partially active (missing TP)")
+            logger.warning(f"⚠️  Trade {trade_id} partially active (all TPs failed)")
         else:
             trade.status = TradeStatus.FAILED
             trade.metadata["error"] = "Failed to place required orders"
