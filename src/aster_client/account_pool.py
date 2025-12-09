@@ -269,6 +269,36 @@ class AccountPool:
         
         return await self.execute_parallel(get_balances)
     
+    async def get_orders_parallel(
+        self,
+        symbol: Optional[str] = None
+    ) -> List[AccountResult[List[OrderResponse]]]:
+        """
+        Get active orders for all accounts in parallel.
+        
+        Args:
+            symbol: Optional symbol to filter orders (e.g., "BTCUSDT").
+                   If None, returns all orders for each account.
+        
+        Returns:
+            List of AccountResult objects containing OrderResponse lists
+            
+        Example:
+            # Get all orders across all accounts
+            results = await pool.get_orders_parallel()
+            
+            # Get only BTCUSDT orders
+            results = await pool.get_orders_parallel(symbol="BTCUSDT")
+            
+            for result in results:
+                if result.success:
+                    print(f"{result.account_id}: {len(result.result)} orders")
+        """
+        async def get_orders(client: AsterClient) -> List[OrderResponse]:
+            return await client.get_orders(symbol=symbol)
+        
+        return await self.execute_parallel(get_orders)
+    
     async def place_orders_parallel(
         self,
         orders: OrderRequest | List[OrderRequest],

@@ -357,6 +357,53 @@ class TestAccountPoolAccountInfoMethods:
             assert len(results) == 1
             assert results[0].success
             assert results[0].result == mock_balances
+    
+    @pytest.mark.asyncio
+    async def test_get_orders_parallel(self):
+        """Test parallel orders retrieval."""
+        accounts = [
+            AccountConfig(id="acc1", api_key="key1key1key1key1key1key1", api_secret="sec1sec1sec1sec1sec1sec1"),
+            AccountConfig(id="acc2", api_key="key2key2key2key2key2key2", api_secret="sec2sec2sec2sec2sec2sec2"),
+        ]
+        
+        mock_orders = [Mock(spec=OrderResponse)]
+        
+        async with AccountPool(accounts) as pool:
+            for client in pool._clients.values():
+                client.get_orders = AsyncMock(return_value=mock_orders)
+            
+            results = await pool.get_orders_parallel()
+            
+            assert len(results) == 2
+            assert all(r.success for r in results)
+            assert all(r.result == mock_orders for r in results)
+            
+            # Verify get_orders was called without symbol filter
+            for client in pool._clients.values():
+                client.get_orders.assert_called_with(symbol=None)
+    
+    @pytest.mark.asyncio
+    async def test_get_orders_parallel_with_symbol(self):
+        """Test parallel orders retrieval with symbol filter."""
+        accounts = [
+            AccountConfig(id="acc1", api_key="key1key1key1key1key1key1", api_secret="sec1sec1sec1sec1sec1sec1"),
+        ]
+        
+        mock_orders = [Mock(spec=OrderResponse)]
+        
+        async with AccountPool(accounts) as pool:
+            for client in pool._clients.values():
+                client.get_orders = AsyncMock(return_value=mock_orders)
+            
+            results = await pool.get_orders_parallel(symbol="BTCUSDT")
+            
+            assert len(results) == 1
+            assert results[0].success
+            assert results[0].result == mock_orders
+            
+            # Verify get_orders was called with symbol filter
+            for client in pool._clients.values():
+                client.get_orders.assert_called_with(symbol="BTCUSDT")
 
 
 class TestAccountPoolOrderMethods:
