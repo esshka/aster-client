@@ -57,7 +57,7 @@ async def main():
     SYMBOL = "SOLUSDT"
     QUANTITY = Decimal("0.05")  # 0.05 SOL
     SIDE = "buy"  # "buy" or "sell"
-    TICKS_DISTANCE = 1  # Number of ticks away from market price (default: 1)
+    TICKS_DISTANCE = 0  # Place at bid1/ask1 (safe with GTX post-only)
     # TICKS_DISTANCE = 2 would place order 2 ticks away from market
     # TICKS_DISTANCE = 5 would place order 5 ticks away from market
 
@@ -151,7 +151,7 @@ async def main():
                 best_ask=best_ask,
                 tick_size=tick_size,
                 ticks_distance=TICKS_DISTANCE,
-                time_in_force="gtc",
+                time_in_force="GTX",  # Post-only: reject if would cross spread
                 client_order_id=f"bbo_{SIDE}_{SYMBOL.lower()}",
                 position_side="LONG" if SIDE == "buy" else "SHORT"
             )

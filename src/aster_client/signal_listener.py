@@ -1,22 +1,60 @@
 """
 ZMQ Signal Listener - Listens for trading signals via ZeroMQ and executes them.
 
-This module provides the ZMQSignalListener class which handles ENTRY/EXIT/PARTIAL_EXIT
-signals from the Python realtime trading pipeline.
+Location: src/aster_client/signal_listener.py
+Purpose: Receive ENTRY/EXIT/PARTIAL_EXIT signals from run_realtime.py and execute trades
+Relevant files: models/signal_models.py, account_pool.py, bbo.py
 
-Supported message format (Signal):
+This module provides the ZMQSignalListener class which handles trading signals
+from the Python realtime trading pipeline (run_realtime.py).
+
+Symbol format: Accepts both SOL_USDT and SOLUSDT formats (auto-converted to Binance format)
+
+Supported message formats from run_realtime.py:
+
+1. ENTRY - Open new position:
 {
-    "type": "signal",
-    "action": "ENTRY|EXIT|PARTIAL_EXIT",
-    "direction": "LONG|SHORT",
-    "symbol": "SOLUSDT",
-    "price": 150.50,
-    "timestamp": "2025-12-09T01:00:00Z",
-    "stop_loss": 148.00,
-    "position_size_r": 20.0,
-    "exit_pct": 0.5,
-    "move_sl_to_be": false
+    "action": "ENTRY",
+    "direction": "LONG" | "SHORT",
+    "symbol": "SOL_USDT",
+    "price": 100.0,
+    "stop_loss": 95.0,
+    "take_profit": 110.0,
+    "confidence": 0.85,
+    "position_size_r": 1.0,
+    "signal_type": "BUY" | "SELL",
+    "timestamp": "2025-12-14T17:22:47...",
+    "multi_tp_enabled": true,
+    "tp_levels": [{"price": 105.0, "exit_pct": 0.5, "ratio": 1.0}, ...],
+    "move_sl_to_be_after_tp1": false
 }
+
+2. EXIT - Close position:
+{
+    "action": "EXIT",
+    "direction": "LONG" | "SHORT",
+    "symbol": "SOL_USDT",
+    "price": 105.0,
+    "reason": "TP" | "SL" | "TimeKill" | "SignalFlip",
+    "timestamp": "2025-12-14T17:22:47..."
+}
+
+3. PARTIAL_EXIT - Partial profit take:
+{
+    "action": "PARTIAL_EXIT",
+    "direction": "LONG" | "SHORT",
+    "symbol": "SOL_USDT",
+    "price": 103.0,
+    "tp_level": 1,
+    "exit_pct": 0.5,
+    "remaining_pct": 0.5,
+    "move_sl_to_be": true,
+    "timestamp": "2025-12-14T17:22:47..."
+}
+
+ZMQ Configuration:
+- Default URL: tcp://127.0.0.1:5556
+- Topic: "orders" (multipart message format)
 """
 
 import asyncio
@@ -70,7 +108,7 @@ class ZMQSignalListener:
             log_dir: Directory for log files
         """
         if zmq_url is None:
-            zmq_url = os.environ.get("ZMQ_URL", "tcp://127.0.0.1:5555")
+            zmq_url = os.environ.get("ZMQ_URL", "tcp://127.0.0.1:5556")
         
         self.zmq_url = zmq_url
         self.topic = topic
@@ -101,6 +139,21 @@ class ZMQSignalListener:
         
         # Contract size cache
         self.contract_sizes: Dict[str, Decimal] = {}
+
+    def _normalize_symbol(self, symbol: str) -> str:
+        """
+        Convert symbol from various formats to Binance format.
+        
+        Examples:
+            SOL_USDT -> SOLUSDT
+            SOL/USDT -> SOLUSDT
+            SOLUSDT -> SOLUSDT (unchanged)
+        """
+        if not symbol:
+            return symbol
+        # Remove underscores and slashes
+        normalized = symbol.replace("_", "").replace("/", "").upper()
+        return normalized
 
     def _setup_session_logging(self):
         """Set up session-specific log file."""
@@ -186,13 +239,9 @@ class ZMQSignalListener:
         # Start BBO WebSocket
         await self.bbo_calculator.start()
         
-        # Warmup symbol cache
-        logger.info("Warming up symbol cache...")
-        try:
-            cached_count = await self.public_client.warmup_cache()
-            logger.info(f"Symbol cache warmed up with {cached_count} symbols")
-        except Exception as e:
-            logger.warning(f"Failed to warmup symbol cache: {e}")
+        # Skip symbol cache warmup - only cache SOLUSDT on-demand
+        logger.info("Skipping symbol cache warmup (will cache SOLUSDT on-demand)")
+
         
         # Start account WebSockets
         for acc_config in self.account_configs:
@@ -268,9 +317,16 @@ class ZMQSignalListener:
                 logger.debug(f"Heartbeat: {message.get('status', 'ok')}")
                 return
             
-            if msg_type != "signal":
+            # Accept both explicit "signal" type and messages with just "action" field
+            # (run_realtime.py sends action without type)
+            if msg_type != "signal" and "action" not in message:
                 logger.warning(f"Unknown message type: {msg_type}")
                 return
+            
+            # Normalize symbol format before parsing (SOL_USDT -> SOLUSDT)
+            if "symbol" in message:
+                message["symbol"] = self._normalize_symbol(message["symbol"])
+                logger.debug(f"Normalized symbol: {message['symbol']}")
             
             # Parse signal message
             try:
