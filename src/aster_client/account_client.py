@@ -201,6 +201,7 @@ class AsterClient:
         position_side: Optional[str] = None,
         best_bid: Optional[Decimal] = None,
         best_ask: Optional[Decimal] = None,
+        reduce_only: Optional[bool] = None,  # None = don't send, True = reduce only
     ) -> OrderResponse:
         """
         Place a BBO order with automatic retry on unfilled orders.
@@ -312,6 +313,7 @@ class AsterClient:
                     time_in_force=time_in_force,
                     client_order_id=client_order_id,
                     position_side=position_side,
+                    reduce_only=reduce_only,
                 )
                 
                 last_order_response = await self.place_order(order)
@@ -453,8 +455,8 @@ class AsterClient:
         best_bid: Optional[Decimal] = None,
         best_ask: Optional[Decimal] = None,
         ticks_distance: int = 0,
-        max_retries: int = 2,
-        fill_timeout_ms: int = 1000,
+        max_retries: int = 5,  # More retries for close (we want to exit)
+        fill_timeout_ms: int = 2000,  # Longer timeout for fills
         max_chase_percent: float = 0.1,
     ) -> ClosePositionResult:
         """
@@ -523,17 +525,19 @@ class AsterClient:
             
             # Step 4: Determine close order side (opposite of position side)
             position_qty = abs(symbol_position.quantity)
-            position_side = symbol_position.side.lower()
+            position_side = symbol_position.side.upper()  # LONG or SHORT
             
             # Close side is opposite: long -> sell, short -> buy
-            close_side = "sell" if position_side == "long" else "buy"
+            close_side = "sell" if position_side == "LONG" else "buy"
             
             logger.info(
                 f"📉 Closing {position_side} position for {symbol}: "
                 f"{position_qty} @ close side={close_side}"
             )
             
-            # Step 5: Place BBO order with reduce_only to close position
+            # Step 5: Place BBO order to close position
+            # In Hedge Mode: use position_side param (not reduce_only)
+            # The position_side tells the API which position to close
             try:
                 close_order = await self.place_bbo_order_with_retry(
                     symbol=symbol,
@@ -546,6 +550,8 @@ class AsterClient:
                     max_chase_percent=max_chase_percent,
                     best_bid=best_bid,
                     best_ask=best_ask,
+                    position_side=position_side,  # For Hedge Mode: specify which side to close
+                    # Note: Don't send reduce_only in Hedge Mode - API rejects it
                 )
                 
                 logger.info(
