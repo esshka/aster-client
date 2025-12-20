@@ -2,8 +2,8 @@
 ZMQ Trade Listener - Listens for trade commands via ZeroMQ and executes them in parallel.
 
 This module provides the ZMQTradeListener class which subscribes to a ZeroMQ topic,
-receives trade configuration messages, and executes trades across multiple accounts
-using the AccountPool and trades modules.
+receives trade configuration messages, and executes trades across multiple accounts.
+Accounts are loaded from a YAML config file at startup.
 
 Supported message types:
 
@@ -25,16 +25,7 @@ Supported message types:
        "side": "buy",              # "buy" or "sell"
        "tp_percent": 1.5,          # Optional: Take profit percentage (e.g., 1.5%), or null
        "sl_percent": 0.5,          # Stop loss percentage (e.g., 0.5%)
-       "ticks_distance": 0,        # Optional (default: 0), BBO offset in ticks
-       "accounts": [               # List of accounts to execute on
-           {
-               "id": "acc_1",          # Account identifier
-               "api_key": "...",       # API key
-               "api_secret": "...",    # API secret
-               "quantity": 0.001,      # Order quantity for this account
-               "simulation": false     # Optional (default: false), use testnet/sim
-           }
-       ]
+       "ticks_distance": 0         # Optional (default: 0), BBO offset in ticks
    }
 
 3. Generic Order Message
@@ -48,15 +39,7 @@ Supported message types:
        "ticks_distance": 0,        # Required for BBO orders (default: 0)
        "reduce_only": false,       # Optional
        "time_in_force": "gtc",     # Optional
-       "position_side": "LONG",    # Optional (for hedge mode)
-       "accounts": [               # Same account structure as trade message
-           {
-               "id": "acc_1",
-               "api_key": "...",
-               "quantity": 0.001,
-               ...
-           }
-       ]
+       "position_side": "LONG"     # Optional (for hedge mode)
    }
 
 4. Close Position Message
@@ -64,30 +47,26 @@ Supported message types:
    {
        "type": "close_position",
        "symbol": "BTCUSDT",
-       "ticks_distance": 0,        # Optional (default: 0 for aggressive close)
-       "accounts": [               # Same account structure as trade message
-           {
-               "id": "acc_1",
-               "api_key": "...",
-               "api_secret": "..."
-           }
-       ]
+       "ticks_distance": 0         # Optional (default: 0 for aggressive close)
    }
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 
 import zmq
 import zmq.asyncio
 
+from .account_client import AsterClient
 from .account_pool import AccountPool, AccountConfig
+from .models import ConnectionConfig
 from .public_client import AsterPublicClient
 from .trades import create_trade
 from .bbo import BBOPriceCalculator
@@ -106,7 +85,13 @@ class ZMQTradeListener:
         socket: ZMQ subscriber socket
     """
     
-    def __init__(self, zmq_url: Optional[str] = None, topic: str = "", log_dir: str = "logs"):
+    def __init__(
+        self, 
+        zmq_url: Optional[str] = None, 
+        topic: str = "", 
+        log_dir: str = "logs",
+        accounts: Optional[List[Dict[str, Any]]] = None,
+    ):
         """
         Initialize the ZMQ listener.
         
@@ -114,6 +99,8 @@ class ZMQTradeListener:
             zmq_url: URL of the ZMQ publisher. If None, uses ZMQ_URL env var or default.
             topic: Topic to subscribe to (empty string for all topics)
             log_dir: Directory to store session log files (default: "logs")
+            accounts: List of account dicts with id, api_key, api_secret, quantity, simulation.
+                      If provided, these accounts are used for all trade messages.
         """
         if zmq_url is None:
             zmq_url = os.environ.get("ZMQ_URL", "tcp://127.0.0.1:5556")
@@ -126,6 +113,9 @@ class ZMQTradeListener:
         self.log_dir = log_dir
         self.file_handler = None
         
+        # Accounts loaded from config (used if not specified in message)
+        self._config_accounts = accounts or []
+        
         # Initialize public client for market data (shared instance via singleton)
         # auto_warmup=False because we'll manually control warmup timing in start()
         self.public_client = AsterPublicClient(auto_warmup=False)
@@ -133,8 +123,20 @@ class ZMQTradeListener:
         # Initialize BBO calculator (singleton)
         self.bbo_calculator = BBOPriceCalculator()
         
+        # Persistent client cache: key = (account_id, credentials_hash)
+        # Clients are reused across messages for low-latency execution
+        self._clients: Dict[str, AsterClient] = {}
+        self._clients_lock = asyncio.Lock()
+        
+        # Cache statistics for monitoring
+        self._cache_hits = 0
+        self._cache_misses = 0
+        
         # Set up session-specific log file
         self._setup_session_logging()
+        
+        if self._config_accounts:
+            logger.info(f"Loaded {len(self._config_accounts)} accounts from config")
         
     async def start(self):
         """Start listening for messages."""
@@ -206,6 +208,9 @@ class ZMQTradeListener:
         # Close public client session
         await self.public_client.close()
         
+        # Close all cached account clients
+        await self._cleanup_clients()
+        
         logger.info("ZMQ listener stopped")
         
         # Clean up file handler
@@ -213,6 +218,137 @@ class ZMQTradeListener:
             logger.removeHandler(self.file_handler)
             self.file_handler.close()
             self.file_handler = None
+    
+    async def _cleanup_clients(self):
+        """Close all cached account clients and release resources."""
+        async with self._clients_lock:
+            close_tasks = [client.close() for client in self._clients.values()]
+            if close_tasks:
+                await asyncio.gather(*close_tasks, return_exceptions=True)
+                logger.info(f"Closed {len(self._clients)} cached account clients")
+            self._clients.clear()
+    
+    def _get_client_cache_key(self, account_id: str, api_key: str, api_secret: str) -> str:
+        """
+        Generate a cache key for account client lookup.
+        
+        Uses account_id + hash of credentials to detect credential changes.
+        """
+        # Hash credentials to detect changes without storing them in the key
+        cred_hash = hashlib.sha256(f"{api_key}:{api_secret}".encode()).hexdigest()[:16]
+        return f"{account_id}:{cred_hash}"
+    
+    async def _get_or_create_client(
+        self, 
+        account_id: str, 
+        api_key: str, 
+        api_secret: str, 
+        simulation: bool = False
+    ) -> AsterClient:
+        """
+        Get an existing client or create a new one with pre-warmed session.
+        
+        Clients are cached by (account_id, credentials_hash) to:
+        1. Reuse TCP connections for low-latency requests
+        2. Detect credential changes and create new clients if needed
+        
+        Args:
+            account_id: Unique account identifier
+            api_key: API key for authentication
+            api_secret: API secret for authentication  
+            simulation: Enable simulation/testnet mode
+            
+        Returns:
+            AsterClient instance with warmed session
+        """
+        cache_key = self._get_client_cache_key(account_id, api_key, api_secret)
+        
+        async with self._clients_lock:
+            # Return cached client if exists
+            if cache_key in self._clients:
+                self._cache_hits += 1
+                return self._clients[cache_key]
+            
+            # Cache miss - create new client
+            self._cache_misses += 1
+            
+            config = ConnectionConfig(
+                api_key=api_key,
+                api_secret=api_secret,
+                simulation=simulation,
+            )
+            client = AsterClient(config)
+            
+            # Pre-warm the session (creates aiohttp.ClientSession)
+            await client._session_manager.create_session()
+            
+            # Cache the client
+            self._clients[cache_key] = client
+            logger.info(f"Created and cached client for account {account_id} (cache size: {len(self._clients)})")
+            
+            return client
+    
+    @property
+    def cache_size(self) -> int:
+        """Get the current number of cached clients."""
+        return len(self._clients)
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """
+        Get cache statistics for monitoring.
+        
+        Returns:
+            Dictionary with cache_size, hits, misses, and hit_rate
+        """
+        total = self._cache_hits + self._cache_misses
+        hit_rate = (self._cache_hits / total * 100) if total > 0 else 0.0
+        
+        return {
+            "cache_size": len(self._clients),
+            "hits": self._cache_hits,
+            "misses": self._cache_misses,
+            "total_requests": total,
+            "hit_rate_percent": round(hit_rate, 2),
+        }
+    
+    async def prewarm_accounts(self, accounts: List[Dict[str, Any]]) -> int:
+        """
+        Pre-warm account clients before any messages arrive.
+        
+        Call this at startup with known accounts to eliminate first-message latency.
+        Sessions will be created and cached for all accounts.
+        
+        Args:
+            accounts: List of account dicts with id, api_key, api_secret, simulation (optional)
+                      Same format as accounts in ZMQ messages.
+        
+        Returns:
+            Number of accounts successfully warmed
+        
+        Example:
+            accounts = [
+                {"id": "acc1", "api_key": "key1", "api_secret": "secret1"},
+                {"id": "acc2", "api_key": "key2", "api_secret": "secret2", "simulation": True},
+            ]
+            warmed = await listener.prewarm_accounts(accounts)
+            logger.info(f"Pre-warmed {warmed} accounts")
+        """
+        warmed = 0
+        for acc in accounts:
+            try:
+                await self._get_or_create_client(
+                    account_id=acc["id"],
+                    api_key=acc["api_key"],
+                    api_secret=acc["api_secret"],
+                    simulation=acc.get("simulation", False)
+                )
+                warmed += 1
+                logger.debug(f"Pre-warmed account {acc['id']}")
+            except Exception as e:
+                logger.error(f"Failed to pre-warm account {acc['id']}: {e}")
+        
+        logger.info(f"Pre-warmed {warmed}/{len(accounts)} accounts (cache size: {self.cache_size})")
+        return warmed
     
     def _setup_session_logging(self):
         """
@@ -366,8 +502,12 @@ class ZMQTradeListener:
         order_type = message["order_type"] 
         accounts_data = message.get("accounts", [])
         
+        # Fall back to config accounts if none in message
         if not accounts_data:
-            logger.warning("No accounts provided in order message")
+            accounts_data = self._config_accounts
+        
+        if not accounts_data:
+            logger.warning("No accounts provided in order message and no accounts loaded from config")
             return
 
         # Fetch market data for BBO if needed
@@ -414,87 +554,80 @@ class ZMQTradeListener:
             f"Side: {side}, Accounts: {len(accounts_data)}"
         )
 
-        account_configs = []
-        quantities = {}
+        # Get or create cached clients for each account (sessions pre-warmed)
+        tasks = []
+        account_ids = []
         
-        for i, acc in enumerate(accounts_data, 1):
-            config = AccountConfig(
-                id=acc["id"],
+        for acc in accounts_data:
+            client = await self._get_or_create_client(
+                account_id=acc["id"],
                 api_key=acc["api_key"],
                 api_secret=acc["api_secret"],
                 simulation=acc.get("simulation", False)
             )
-            account_configs.append(config)
-            quantities[acc["id"]] = Decimal(str(acc["quantity"]))
-
-        async with AccountPool(account_configs) as pool:
-            tasks = []
-            for acc_config in account_configs:
-                client = pool.get_client(acc_config.id)
-                if not client:
-                    continue
+            
+            qty = Decimal(str(acc["quantity"]))
+            
+            if order_type.lower() == "bbo":
+                # Special handling for BBO
+                ticks_distance = int(message.get("ticks_distance", 0))
+                task = client.place_bbo_order(
+                    symbol=symbol,
+                    side=side,
+                    quantity=qty,
+                    best_bid=best_bid,
+                    best_ask=best_ask,
+                    tick_size=tick_size,
+                    ticks_distance=ticks_distance,
+                    time_in_force=message.get("time_in_force", "gtc"),
+                    client_order_id=message.get("client_order_id"),
+                    position_side=message.get("position_side")
+                )
+            else:
+                # Standard order types (LIMIT, MARKET, etc.)
+                from .models.orders import OrderRequest
                 
-                qty = quantities[acc_config.id]
-                
-                if order_type.lower() == "bbo":
-                     # Special handling for BBO
-                     ticks_distance = int(message.get("ticks_distance", 0))
-                     task = client.place_bbo_order(
-                         symbol=symbol,
-                         side=side,
-                         quantity=qty,
-                         best_bid=best_bid,
-                         best_ask=best_ask,
-                         tick_size=tick_size,
-                         ticks_distance=ticks_distance,
-                         time_in_force=message.get("time_in_force", "gtc"),
-                         client_order_id=message.get("client_order_id"),
-                         position_side=message.get("position_side")
-                     )
-                else:
-                    # Standard order types (LIMIT, MARKET, etc.)
-                    from .models.orders import OrderRequest
+                price = None
+                if "price" in message and message["price"] is not None:
+                    price = Decimal(str(message["price"]))
                     
-                    price = None
-                    if "price" in message and message["price"] is not None:
-                        price = Decimal(str(message["price"]))
-                        
-                    stop_price = None
-                    if "stop_price" in message and message["stop_price"] is not None:
-                         stop_price = Decimal(str(message["stop_price"]))
+                stop_price = None
+                if "stop_price" in message and message["stop_price"] is not None:
+                    stop_price = Decimal(str(message["stop_price"]))
 
-                    req = OrderRequest(
-                        symbol=symbol,
-                        side=side,
-                        order_type=order_type,
-                        quantity=qty,
-                        price=price,
-                        stop_price=stop_price,
-                        time_in_force=message.get("time_in_force"),
-                        reduce_only=message.get("reduce_only"),
-                        position_side=message.get("position_side"),
-                        client_order_id=message.get("client_order_id"),
-                    )
-                    task = client.place_order(req)
-                
-                tasks.append(task)
+                req = OrderRequest(
+                    symbol=symbol,
+                    side=side,
+                    order_type=order_type,
+                    quantity=qty,
+                    price=price,
+                    stop_price=stop_price,
+                    time_in_force=message.get("time_in_force"),
+                    reduce_only=message.get("reduce_only"),
+                    position_side=message.get("position_side"),
+                    client_order_id=message.get("client_order_id"),
+                )
+                task = client.place_order(req)
+            
+            tasks.append(task)
+            account_ids.append(acc["id"])
 
-            # Execute
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Log results
-            success = 0
-            failed = 0
-            for i, res in enumerate(results):
-                acc_id = account_configs[i].id
-                if isinstance(res, Exception):
-                    failed += 1
-                    logger.error(f"Order failed for {acc_id}: {res}")
-                else:
-                    success += 1
-                    logger.info(f"Order success for {acc_id}: ID={res.order_id}, Status={res.status}")
-            
-            logger.info(f"Order batch completed: {success} ok, {failed} failed")
+        # Execute all orders in parallel
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Log results
+        success = 0
+        failed = 0
+        for i, res in enumerate(results):
+            acc_id = account_ids[i]
+            if isinstance(res, Exception):
+                failed += 1
+                logger.error(f"Order failed for {acc_id}: {res}")
+            else:
+                success += 1
+                logger.info(f"Order success for {acc_id}: ID={res.order_id}, Status={res.status}")
+        
+        logger.info(f"Order batch completed: {success} ok, {failed} failed")
 
     async def _process_close_position_message(self, message: Dict[str, Any]):
         """
@@ -506,8 +639,12 @@ class ZMQTradeListener:
         ticks_distance = int(message.get("ticks_distance", 0))
         accounts_data = message.get("accounts", [])
         
+        # Fall back to config accounts if none in message
         if not accounts_data:
-            logger.warning("No accounts provided in close_position message")
+            accounts_data = self._config_accounts
+        
+        if not accounts_data:
+            logger.warning("No accounts provided in close_position message and no accounts loaded from config")
             return
         
         logger.info(
@@ -542,45 +679,66 @@ class ZMQTradeListener:
                 logger.error(f"Failed to fetch order book for {symbol}")
                 return
         
-        # Prepare account configurations
-        account_configs = []
+        # Get or create cached clients for each account (sessions pre-warmed)
+        tasks = []
+        account_ids = []
+        
         for acc in accounts_data:
-            config = AccountConfig(
-                id=acc["id"],
+            client = await self._get_or_create_client(
+                account_id=acc["id"],
                 api_key=acc["api_key"],
                 api_secret=acc["api_secret"],
                 simulation=acc.get("simulation", False)
             )
-            account_configs.append(config)
-        
-        # Execute close positions in parallel
-        async with AccountPool(account_configs) as pool:
-            results = await pool.close_positions_for_symbol_parallel(
+            
+            task = client.close_position_for_symbol(
                 symbol=symbol,
                 tick_size=tick_size,
                 best_bid=best_bid,
                 best_ask=best_ask,
                 ticks_distance=ticks_distance,
             )
-            
-            # Log summary
-            success_count = sum(1 for r in results if r.success)
-            failed_count = len(results) - success_count
-            
-            total_cancelled = sum(
-                r.result.cancelled_orders_count for r in results 
-                if r.success and r.result
-            )
-            total_closed = sum(
-                1 for r in results 
-                if r.success and r.result and r.result.close_order
-            )
-            
-            logger.info(
-                f"✅ Close position batch completed - Symbol: {symbol}, "
-                f"Accounts: {len(results)}, Success: {success_count}, Failed: {failed_count}, "
-                f"Positions Closed: {total_closed}, Orders Cancelled: {total_cancelled}"
-            )
+            tasks.append(task)
+            account_ids.append(acc["id"])
+        
+        # Execute close positions in parallel
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Log summary
+        success_count = 0
+        failed_count = 0
+        total_cancelled = 0
+        total_closed = 0
+        
+        for i, res in enumerate(results):
+            acc_id = account_ids[i]
+            if isinstance(res, Exception):
+                failed_count += 1
+                logger.error(f"Close position failed for {acc_id}: {res}")
+            elif res.success:
+                success_count += 1
+                total_cancelled += res.cancelled_orders_count
+                if res.close_order:
+                    total_closed += 1
+                    logger.info(
+                        f"Position closed for {acc_id}: "
+                        f"Qty={res.position_quantity}, "
+                        f"Cancelled={res.cancelled_orders_count} orders"
+                    )
+                else:
+                    logger.info(
+                        f"No position to close for {acc_id}, "
+                        f"cancelled {res.cancelled_orders_count} orders"
+                    )
+            else:
+                failed_count += 1
+                logger.error(f"Close position failed for {acc_id}: {res.error}")
+        
+        logger.info(
+            f"✅ Close position batch completed - Symbol: {symbol}, "
+            f"Accounts: {len(results)}, Success: {success_count}, Failed: {failed_count}, "
+            f"Positions Closed: {total_closed}, Orders Cancelled: {total_cancelled}"
+        )
 
     async def _process_trade_message(self, message: Dict[str, Any]):
         """
@@ -598,8 +756,13 @@ class ZMQTradeListener:
         ticks_distance = int(message.get("ticks_distance", 0))  # At bid1/ask1 (safe with GTX)
         
         accounts_data = message.get("accounts", [])
+        
+        # Fall back to config accounts if none in message
         if not accounts_data:
-            logger.warning("No accounts provided in message")
+            accounts_data = self._config_accounts
+        
+        if not accounts_data:
+            logger.warning("No accounts provided in message and no accounts loaded from config")
             return
         
         # Fetch market data
@@ -644,116 +807,113 @@ class ZMQTradeListener:
             f"Ticks Distance: {ticks_distance}"
         )
         
-        # Prepare account configurations
-        account_configs = []
-        quantities = {}
+        # Get default quantity from message (applies to all accounts if not per-account)
+        default_quantity = message.get("quantity")
+        
+        # Get or create cached clients for each account (sessions pre-warmed)
+        tasks = []
+        account_ids = []
         
         for i, acc in enumerate(accounts_data, 1):
-            config = AccountConfig(
-                id=acc["id"],
-                api_key=acc["api_key"],
-                api_secret=acc["api_secret"],
-                simulation=acc.get("simulation", False)
-            )
-            account_configs.append(config)
-            quantities[acc["id"]] = Decimal(str(acc["quantity"]))
+            # Get quantity: message > account config > error
+            qty_raw = acc.get("quantity") or default_quantity
+            if not qty_raw:
+                logger.error(f"No quantity specified for account {acc['id']} - skipping")
+                continue
+            
+            qty = Decimal(str(qty_raw))
             
             # Log account setup (sanitized)
             logger.info(
                 f"Account {i}/{len(accounts_data)} configured - "
-                f"ID: {acc['id']}, Quantity: {acc['quantity']}, "
+                f"ID: {acc['id']}, Quantity: {qty}, "
                 f"Simulation: {acc.get('simulation', False)}"
             )
+            
+            client = await self._get_or_create_client(
+                account_id=acc["id"],
+                api_key=acc["api_key"],
+                api_secret=acc["api_secret"],
+                simulation=acc.get("simulation", False)
+            )
+            
+            logger.debug(
+                f"Creating trade task for account {acc['id']} - "
+                f"Symbol: {symbol}, Side: {side}, Qty: {qty}"
+            )
+            
+            task = create_trade(
+                client=client,
+                symbol=symbol,
+                side=side,
+                quantity=qty,
+                best_bid=best_bid,
+                best_ask=best_ask,
+                tick_size=tick_size,
+                tp_percents=[tp_percent] if tp_percent is not None else [],
+                sl_percent=sl_percent,
+                ticks_distance=ticks_distance
+            )
+            tasks.append(task)
+            account_ids.append(acc["id"])
         
-        logger.info(f"Initiating parallel trade execution for {len(account_configs)} accounts...")
+        logger.info(f"Executing {len(tasks)} trade tasks in parallel...")
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Execute trades in parallel using AccountPool
-        async with AccountPool(account_configs) as pool:
+        # Log results
+        logger.info("Trade execution completed. Processing results...")
+        success_count = 0
+        failed_count = 0
+        
+        for i, res in enumerate(results):
+            acc_id = account_ids[i]
             
-            tasks = []
-            for acc_config in account_configs:
-                client = pool.get_client(acc_config.id)
-                if not client:
-                    logger.warning(f"Client not found for account {acc_config.id}")
-                    continue
-                    
-                qty = quantities[acc_config.id]
-                
-                logger.debug(
-                    f"Creating trade task for account {acc_config.id} - "
-                    f"Symbol: {symbol}, Side: {side}, Qty: {qty}"
+            if isinstance(res, Exception):
+                failed_count += 1
+                logger.error(
+                    f"Trade FAILED for account {acc_id} - Error: {type(res).__name__}: {res}",
+                    exc_info=res
                 )
-                
-                task = create_trade(
-                    client=client,
-                    symbol=symbol,
-                    side=side,
-                    quantity=qty,
-                    best_bid=best_bid,
-                    best_ask=best_ask,
-                    tick_size=tick_size,
-                    tp_percent=tp_percent,
-                    sl_percent=sl_percent,
-                    ticks_distance=ticks_distance
-                )
-                tasks.append(task)
-            
-            logger.info(f"Executing {len(tasks)} trade tasks in parallel...")
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Log results
-            logger.info("Trade execution completed. Processing results...")
-            success_count = 0
-            failed_count = 0
-            
-            for i, res in enumerate(results):
-                acc_id = account_configs[i].id
-                
-                if isinstance(res, Exception):
-                    failed_count += 1
-                    logger.error(
-                        f"Trade FAILED for account {acc_id} - Error: {type(res).__name__}: {res}",
-                        exc_info=res
+            else:
+                if res.status.value in ["active", "entry_filled", "entry_placed"]:
+                    success_count += 1
+                    logger.info(
+                        f"Trade SUCCESS for account {acc_id} - "
+                        f"Trade ID: {res.trade_id}, Status: {res.status.value}, "
+                        f"Entry Order ID: {res.entry_order.order_id if res.entry_order else 'N/A'}"
                     )
-                else:
-                    if res.status.value in ["active", "entry_filled", "entry_placed"]:
-                        success_count += 1
+                    
+                    # Log order details if available
+                    if res.entry_order:
                         logger.info(
-                            f"Trade SUCCESS for account {acc_id} - "
-                            f"Trade ID: {res.trade_id}, Status: {res.status.value}, "
-                            f"Entry Order ID: {res.entry_order.order_id if res.entry_order else 'N/A'}"
+                            f"  Entry order placed - Account: {acc_id}, "
+                            f"Order ID: {res.entry_order.order_id}, "
+                            f"Price: {res.entry_order.price}, "
+                            f"Size: {res.entry_order.size}"
                         )
-                        
-                        # Log order details if available
-                        if res.entry_order:
-                            logger.info(
-                                f"  Entry order placed - Account: {acc_id}, "
-                                f"Order ID: {res.entry_order.order_id}, "
-                                f"Price: {res.entry_order.price}, "
-                                f"Size: {res.entry_order.size}"
-                            )
-                        if res.take_profit_order:
+                    if res.take_profit_orders:
+                        for tp_order in res.take_profit_orders:
                             logger.info(
                                 f"  TP order placed - Account: {acc_id}, "
-                                f"Order ID: {res.take_profit_order.order_id}, "
-                                f"Price: {res.take_profit_order.price}"
+                                f"Order ID: {tp_order.order_id}, "
+                                f"Price: {tp_order.price}"
                             )
-                        if res.stop_loss_order:
-                            logger.info(
-                                f"  SL order placed - Account: {acc_id}, "
-                                f"Order ID: {res.stop_loss_order.order_id}, "
-                                f"Price: {res.stop_loss_order.price}"
-                            )
-                    else:
-                        failed_count += 1
-                        logger.warning(
-                            f"Trade INCOMPLETE for account {acc_id} - "
-                            f"Trade ID: {res.trade_id}, Status: {res.status.value}"
+                    if res.stop_loss_order:
+                        logger.info(
+                            f"  SL order placed - Account: {acc_id}, "
+                            f"Order ID: {res.stop_loss_order.order_id}, "
+                            f"Price: {res.stop_loss_order.price}"
                         )
-                        
-            logger.info(
-                f"Batch execution summary - Symbol: {symbol}, Side: {side}, "
-                f"Total: {len(account_configs)}, Success: {success_count}, Failed: {failed_count}"
-            )
+                else:
+                    failed_count += 1
+                    logger.warning(
+                        f"Trade INCOMPLETE for account {acc_id} - "
+                        f"Trade ID: {res.trade_id}, Status: {res.status.value}"
+                    )
+                    
+        logger.info(
+            f"Batch execution summary - Symbol: {symbol}, Side: {side}, "
+            f"Total: {len(account_ids)}, Success: {success_count}, Failed: {failed_count}"
+        )
 
 

@@ -16,11 +16,25 @@ import argparse
 import json
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
+import yaml
 import zmq
 
 
+def load_config():
+    """Load configuration from config.yml"""
+    config_path = Path(__file__).parent.parent / "config.yml"
+    if config_path.exists():
+        with open(config_path) as f:
+            return yaml.safe_load(f)
+    return {}
+
+
 def main():
+    config = load_config()
+    zmq_config = config.get("zmq", {})
+    
     parser = argparse.ArgumentParser(description="Send test signals to ZMQ listener")
     parser.add_argument("action", choices=["ENTRY", "EXIT", "PARTIAL_EXIT"])
     parser.add_argument("direction", choices=["LONG", "SHORT"])
@@ -36,8 +50,8 @@ def main():
     parser.add_argument("--reason", help="Reason for signal")
     parser.add_argument("--confidence", type=float, help="Model confidence (0-1)")
     
-    parser.add_argument("--zmq_url", default="tcp://127.0.0.1:5555", help="ZMQ URL")
-    parser.add_argument("--topic", default="orders", help="ZMQ topic")
+    parser.add_argument("--zmq_url", default=zmq_config.get("url", "tcp://127.0.0.1:5556"), help="ZMQ URL")
+    parser.add_argument("--topic", default=zmq_config.get("topic", "orders"), help="ZMQ topic")
     
     args = parser.parse_args()
     

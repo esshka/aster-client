@@ -1,0 +1,17 @@
+# Aster Client Configuration
+# Copy this file to config.yml and customize for your environment
+
+# ZeroMQ Configuration
+zmq:
+  url: "tcp://127.0.0.1:5556"
+  topic: "orders"
+
+# Logging Configuration  
+logging:
+  level: "INFO"
+  log_dir: "logs"
+
+# Trading Configuration
+trading:
+  default_ticks_distance: 0
+  default_time_in_force: "gtc"

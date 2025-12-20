@@ -246,6 +246,7 @@ class AsterClient:
         
         attempts = 0
         last_order_response = None
+        last_bbo_price = None  # Track last order price to avoid unnecessary replacements
         
         while attempts <= max_retries:
             # Get fresh BBO prices for each attempt (prefer cache, fallback to provided)
@@ -269,29 +270,56 @@ class AsterClient:
                         f"Price moved {deviation:.3f}% from original, exceeds {max_chase_percent}% limit"
                     )
             
-            # Calculate BBO price and place order
+            # Calculate BBO price
             bbo_price = self._bbo_calculator.calculate_bbo_price(
                 symbol, side, current_best_bid, current_best_ask, tick_size, ticks_distance
             )
-
             
-            logger.info(
-                f"🎯 BBO Order Attempt {attempts + 1}/{max_retries + 1}: "
-                f"{symbol} {side.upper()} @ {bbo_price}"
-            )
+            # Check if we need to place/replace order
+            # Only cancel & replace if price changed OR first attempt
+            order_placed_this_round = False
             
-            order = OrderRequest(
-                symbol=symbol,
-                side=side.lower(),
-                order_type="limit",
-                quantity=quantity,
-                price=bbo_price,
-                time_in_force=time_in_force,
-                client_order_id=client_order_id,
-                position_side=position_side,
-            )
-            
-            last_order_response = await self.place_order(order)
+            if last_order_response is None or bbo_price != last_bbo_price:
+                # Cancel existing order if price changed
+                if last_order_response is not None and bbo_price != last_bbo_price:
+                    logger.info(
+                        f"📊 Price changed: {last_bbo_price} → {bbo_price}, replacing order"
+                    )
+                    try:
+                        await self.cancel_order(
+                            symbol=symbol,
+                            order_id=int(last_order_response.order_id)
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to cancel order {last_order_response.order_id}: {e}")
+                    
+                    # Count price changes as attempts (not waiting loops)
+                    attempts += 1
+                    if attempts > max_retries:
+                        break
+                
+                logger.info(
+                    f"🎯 BBO Order Attempt {attempts + 1}/{max_retries + 1}: "
+                    f"{symbol} {side.upper()} @ {bbo_price}"
+                )
+                
+                order = OrderRequest(
+                    symbol=symbol,
+                    side=side.lower(),
+                    order_type="limit",
+                    quantity=quantity,
+                    price=bbo_price,
+                    time_in_force=time_in_force,
+                    client_order_id=client_order_id,
+                    position_side=position_side,
+                )
+                
+                last_order_response = await self.place_order(order)
+                last_bbo_price = bbo_price
+                order_placed_this_round = True
+            else:
+                # Price hasn't changed, keep existing order alive
+                logger.debug(f"Price unchanged at {bbo_price}, keeping order alive")
             
             # Wait for fill
             fill_timeout_s = fill_timeout_ms / 1000.0
@@ -309,24 +337,8 @@ class AsterClient:
                     f"ID={order_status.order_id}, Price={order_status.average_price}"
                 )
                 return order_status
-            
-            # Not filled - cancel and retry
-            if attempts < max_retries:
-                logger.info(
-                    f"⏳ BBO Order not filled after {fill_timeout_ms}ms, "
-                    f"cancelling and retrying ({max_retries - attempts} retries left)"
-                )
-                try:
-                    await self.cancel_order(
-                        symbol=symbol,
-                        order_id=int(last_order_response.order_id)
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to cancel order {last_order_response.order_id}: {e}")
-            
-            attempts += 1
         
-        # All retries exhausted
+        # All retries exhausted (only reached if price kept changing)
         logger.error(
             f"❌ BBO Order retry exhausted after {max_retries + 1} attempts. "
             f"Last order: {last_order_response.order_id if last_order_response else 'None'}"

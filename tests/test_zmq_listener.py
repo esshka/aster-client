@@ -72,16 +72,17 @@ class TestZMQTradeListener:
         # Mock BBO calculator
         listener.bbo_calculator.get_bbo = MagicMock(return_value=(Decimal("90000.0"), Decimal("90001.0")))
         
-        # Mock AccountPool and create_trade
-        with patch('aster_client.zmq_listener.AccountPool') as mock_pool_class, \
-             patch('aster_client.zmq_listener.create_trade') as mock_create_trade:
-            
-            # Setup mock pool
-            mock_pool = AsyncMock()
-            mock_pool_class.return_value.__aenter__.return_value = mock_pool
-            mock_pool.get_client.return_value = AsyncMock()
-            
-            # Setup mock trade result
+        # Track accounts that were used
+        created_accounts = []
+        
+        async def mock_get_or_create_client(account_id, api_key, api_secret, simulation=False):
+            created_accounts.append(account_id)
+            return AsyncMock()
+        
+        listener._get_or_create_client = mock_get_or_create_client
+        
+        # Mock create_trade
+        with patch('aster_client.zmq_listener.create_trade') as mock_create_trade:
             mock_trade = Trade(
                 trade_id="test_trade",
                 symbol="BTCUSDT",
@@ -93,12 +94,10 @@ class TestZMQTradeListener:
             # Process message
             await listener.process_message(sample_trade_message)
             
-            # Verify AccountPool was created with correct configs
-            assert mock_pool_class.called
-            account_configs = mock_pool_class.call_args[0][0]
-            assert len(account_configs) == 2
-            assert account_configs[0].id == "test_acc_1"
-            assert account_configs[1].id == "test_acc_2"
+            # Verify clients were created for each account
+            assert len(created_accounts) == 2
+            assert "test_acc_1" in created_accounts
+            assert "test_acc_2" in created_accounts
             
             # Verify create_trade was called for each account
             assert mock_create_trade.call_count == 2
@@ -167,12 +166,12 @@ class TestZMQTradeListener:
         # Mock BBO calculator
         listener.bbo_calculator.get_bbo = MagicMock(return_value=(Decimal("90000.0"), Decimal("90001.0")))
         
-        with patch('aster_client.zmq_listener.AccountPool') as mock_pool_class, \
-             patch('aster_client.zmq_listener.create_trade', side_effect=mock_create_trade):
+        with patch('aster_client.zmq_listener.create_trade', side_effect=mock_create_trade):
+            # Mock _get_or_create_client
+            async def mock_get_or_create_client(account_id, api_key, api_secret, simulation=False):
+                return AsyncMock(id=account_id)
             
-            mock_pool = AsyncMock()
-            mock_pool_class.return_value.__aenter__.return_value = mock_pool
-            mock_pool.get_client.side_effect = lambda x: AsyncMock(id=x)
+            listener._get_or_create_client = mock_get_or_create_client
             
             await listener.process_message(sample_trade_message)
             
@@ -211,12 +210,12 @@ class TestZMQTradeListener:
                 status=TradeStatus.ACTIVE
             )
         
-        with patch('aster_client.zmq_listener.AccountPool') as mock_pool_class, \
-             patch('aster_client.zmq_listener.create_trade', side_effect=mock_create_trade):
+        with patch('aster_client.zmq_listener.create_trade', side_effect=mock_create_trade):
+            # Mock _get_or_create_client
+            async def mock_get_or_create_client(account_id, api_key, api_secret, simulation=False):
+                return AsyncMock()
             
-            mock_pool = AsyncMock()
-            mock_pool_class.return_value.__aenter__.return_value = mock_pool
-            mock_pool.get_client.return_value = AsyncMock()
+            listener._get_or_create_client = mock_get_or_create_client
             
             # Should not raise exception
             await listener.process_message(sample_trade_message)
@@ -269,12 +268,12 @@ class TestZMQTradeListener:
                 status=TradeStatus.ACTIVE
             )
         
-        with patch('aster_client.zmq_listener.AccountPool') as mock_pool_class, \
-             patch('aster_client.zmq_listener.create_trade', side_effect=mock_create_trade):
+        with patch('aster_client.zmq_listener.create_trade', side_effect=mock_create_trade):
+            # Mock _get_or_create_client
+            async def mock_get_or_create_client(account_id, api_key, api_secret, simulation=False):
+                return AsyncMock()
             
-            mock_pool = AsyncMock()
-            mock_pool_class.return_value.__aenter__.return_value = mock_pool
-            mock_pool.get_client.return_value = AsyncMock()
+            listener._get_or_create_client = mock_get_or_create_client
             
             await listener.process_message(sample_trade_message)
             
