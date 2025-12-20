@@ -39,12 +39,14 @@ def main():
     config = load_config()
     zmq_config = config.get("zmq", {})
     logging_config = config.get("logging", {})
+    trading_config = config.get("trading", {})
     
     parser = argparse.ArgumentParser(description="Run ZMQ Trade Listener")
     parser.add_argument("--zmq_url", default=zmq_config.get("url", "tcp://127.0.0.1:5556"))
     parser.add_argument("--topic", default=zmq_config.get("topic", "orders"))
     parser.add_argument("--log_dir", default=logging_config.get("log_dir", "logs"))
     parser.add_argument("--log_level", default=logging_config.get("level", "INFO"))
+    parser.add_argument("--symbol", default=trading_config.get("default_symbol", "SOLUSDT"))
     args = parser.parse_args()
     
     # Configure logging
@@ -58,6 +60,10 @@ def main():
     
     # Import after parsing args to avoid the warning
     from aster_client.zmq_listener import ZMQTradeListener
+    from aster_client.bbo import BBOPriceCalculator
+    
+    # Initialize BBO with configured symbol
+    BBOPriceCalculator(default_symbol=args.symbol)
     
     async def run():
         listener = ZMQTradeListener(
@@ -69,6 +75,7 @@ def main():
         
         print(f"🚀 Starting ZMQ Listener on {args.zmq_url} (topic: '{args.topic}')")
         print(f"📋 Loaded {len(accounts)} accounts from config")
+        print(f"📊 BBO WebSocket symbol: {args.symbol}")
         
         try:
             await listener.start()

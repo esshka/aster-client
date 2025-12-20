@@ -53,15 +53,22 @@ class BBOPriceCalculator:
     
     _instance = None
     _initialized = False
+    _default_symbol = "SOLUSDT"  # Class-level default
 
-    def __new__(cls):
+    def __new__(cls, default_symbol: str = None):
         if cls._instance is None:
             cls._instance = super(BBOPriceCalculator, cls).__new__(cls)
+        # Allow updating the default symbol on existing instance
+        if default_symbol:
+            cls._default_symbol = default_symbol.upper()
         return cls._instance
 
-    def __init__(self):
+    def __init__(self, default_symbol: str = None):
         """Initialize BBO price calculator."""
         if self._initialized:
+            # Update symbol if provided
+            if default_symbol:
+                self._default_symbol = default_symbol.upper()
             return
             
         self.logger = logger
@@ -71,7 +78,10 @@ class BBOPriceCalculator:
         self.bbo_cache: Dict[str, Tuple[Decimal, Decimal]] = {}  # symbol -> (best_bid, best_ask)
         self.last_update: Dict[str, float] = {}  # symbol -> timestamp
         
-        self.logger.debug("BBO calculator initialized (Singleton)")
+        if default_symbol:
+            self._default_symbol = default_symbol.upper()
+        
+        self.logger.debug(f"BBO calculator initialized (Singleton), symbol: {self._default_symbol}")
         self._initialized = True
 
     async def start(self):
@@ -103,10 +113,11 @@ class BBOPriceCalculator:
             
             try:
                 async with aiohttp.ClientSession() as session:
-                    # Subscribe to SOLUSDT bookTicker only
+                    # Subscribe to configured symbol's bookTicker
                     # Base URL changes from /ws to /stream
                     base_url = self.ws_url.replace("/ws/!bookTicker", "/stream")
-                    combined_stream_url = f"{base_url}?streams=solusdt@bookTicker"
+                    symbol_lower = self._default_symbol.lower()
+                    combined_stream_url = f"{base_url}?streams={symbol_lower}@bookTicker"
                     
                     async with session.ws_connect(
                         combined_stream_url,

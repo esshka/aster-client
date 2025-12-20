@@ -13,5 +13,6 @@ logging:
 
 # Trading Configuration
 trading:
+  default_symbol: "AAVEUSDT"  # Symbol for BBO WebSocket subscription
   default_ticks_distance: 0
   default_time_in_force: "gtc"
