@@ -7,6 +7,14 @@
 #   cp accounts_config.example.yml accounts_config.yml
 #   # Edit accounts_config.yml with your actual API credentials
 #   poetry run python examples/multi_account_info.py
+#   poetry run python examples/signal_listener_demo.py
+
+# Position sizing for R-based calculation
+# R = deposit_size * r_percentage
+# Example: R = 140 * 0.01 = 1.4 USDT per R unit
+position_sizing:
+  deposit_size: 140.0     # USDT per account
+  r_percentage: 0.01      # 1% = 1R
 
 accounts:
   # First account
@@ -26,3 +34,4 @@ accounts:
   # - id: "account_3"
   #   api_key: "key3"
   #   api_secret: "secret3"
+

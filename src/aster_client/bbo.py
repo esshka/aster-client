@@ -103,10 +103,10 @@ class BBOPriceCalculator:
             
             try:
                 async with aiohttp.ClientSession() as session:
-                    # Test combined stream with query params (standard Binance format)
+                    # Subscribe to SOLUSDT bookTicker only
                     # Base URL changes from /ws to /stream
                     base_url = self.ws_url.replace("/ws/!bookTicker", "/stream")
-                    combined_stream_url = f"{base_url}?streams=btcusdt@bookTicker/ethusdt@bookTicker/solusdt@bookTicker"
+                    combined_stream_url = f"{base_url}?streams=solusdt@bookTicker"
                     
                     async with session.ws_connect(
                         combined_stream_url,

@@ -192,11 +192,11 @@ class AsterClient:
         side: str,
         quantity: Decimal,
         tick_size: Decimal,
-        ticks_distance: int = 1,
+        ticks_distance: int = 0,  # At bid1/ask1 (safe with GTX post-only)
         max_retries: int = 2,
         fill_timeout_ms: int = 1000,
         max_chase_percent: float = 0.5,
-        time_in_force: str = "gtc",
+        time_in_force: str = "GTX",  # Post-only: reject if would cross spread
         client_order_id: Optional[str] = None,
         position_side: Optional[str] = None,
         best_bid: Optional[Decimal] = None,

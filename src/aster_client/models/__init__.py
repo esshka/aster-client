@@ -9,6 +9,7 @@ from .config import ConnectionConfig, RetryConfig
 from .orders import OrderRequest, OrderResponse, PositionMode, ClosePositionResult
 from .account import AccountInfo, AccountAsset, Position, Balance, BalanceV2
 from .market import MarkPrice, SymbolInfo, LeverageBracket
+from .signal_models import SignalMessage, PositionState, PositionSizingConfig, TPLevel
 
 __all__ = [
     # Configuration
@@ -29,4 +30,9 @@ __all__ = [
     "MarkPrice",
     "SymbolInfo",
     "LeverageBracket",
+    # Signals
+    "SignalMessage",
+    "PositionState",
+    "PositionSizingConfig",
+    "TPLevel",
 ]

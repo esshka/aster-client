@@ -25,7 +25,7 @@ Supported message types:
        "side": "buy",              # "buy" or "sell"
        "tp_percent": 1.5,          # Optional: Take profit percentage (e.g., 1.5%), or null
        "sl_percent": 0.5,          # Stop loss percentage (e.g., 0.5%)
-       "ticks_distance": 1,        # Optional (default: 1), BBO offset in ticks
+       "ticks_distance": 0,        # Optional (default: 0), BBO offset in ticks
        "accounts": [               # List of accounts to execute on
            {
                "id": "acc_1",          # Account identifier
@@ -45,7 +45,7 @@ Supported message types:
        "side": "buy",
        "order_type": "limit",      # "limit", "market", "bbo", etc.
        "price": 50000.0,           # Required for limit orders
-       "ticks_distance": 1,        # Required for BBO orders (default: 1)
+       "ticks_distance": 0,        # Required for BBO orders (default: 0)
        "reduce_only": false,       # Optional
        "time_in_force": "gtc",     # Optional
        "position_side": "LONG",    # Optional (for hedge mode)
@@ -100,7 +100,7 @@ class ZMQTradeListener:
     Listens for trade commands via ZeroMQ and executes them.
     
     Attributes:
-        zmq_url: The ZMQ URL to subscribe to (e.g., "tcp://127.0.0.1:5555")
+        zmq_url: The ZMQ URL to subscribe to (e.g., "tcp://127.0.0.1:5556")
         topic: The topic to subscribe to (default: "")
         ctx: ZMQ context
         socket: ZMQ subscriber socket
@@ -116,7 +116,7 @@ class ZMQTradeListener:
             log_dir: Directory to store session log files (default: "logs")
         """
         if zmq_url is None:
-            zmq_url = os.environ.get("ZMQ_URL", "tcp://127.0.0.1:5555")
+            zmq_url = os.environ.get("ZMQ_URL", "tcp://127.0.0.1:5556")
             
         self.zmq_url = zmq_url
         self.topic = topic
@@ -307,7 +307,7 @@ class ZMQTradeListener:
                 f"Accounts: {len(message.get('accounts', []))}, "
                 f"TP: {message.get('tp_percent', 'N/A')}%, "
                 f"SL: {message.get('sl_percent', 'N/A')}%, "
-                f"Ticks Distance: {message.get('ticks_distance', 1)}"
+                f"Ticks Distance: {message.get('ticks_distance', 0)}"
             )
         
         # Log individual account details (sanitized)
@@ -438,7 +438,7 @@ class ZMQTradeListener:
                 
                 if order_type.lower() == "bbo":
                      # Special handling for BBO
-                     ticks_distance = int(message.get("ticks_distance", 1))
+                     ticks_distance = int(message.get("ticks_distance", 0))
                      task = client.place_bbo_order(
                          symbol=symbol,
                          side=side,
@@ -595,7 +595,7 @@ class ZMQTradeListener:
         tp_percent = float(tp_percent_raw) if tp_percent_raw is not None else None
         
         sl_percent = float(message["sl_percent"])
-        ticks_distance = int(message.get("ticks_distance", 1))
+        ticks_distance = int(message.get("ticks_distance", 0))  # At bid1/ask1 (safe with GTX)
         
         accounts_data = message.get("accounts", [])
         if not accounts_data:

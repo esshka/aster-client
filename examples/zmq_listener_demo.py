@@ -18,7 +18,7 @@ logging.basicConfig(
 async def main():
     # Connect to the publisher (sender)
     load_dotenv()
-    zmq_url = os.getenv("ZMQ_URL", "tcp://127.0.0.1:5555")
+    zmq_url = os.getenv("ZMQ_URL", "tcp://127.0.0.1:5556")
     listener = ZMQTradeListener(zmq_url=zmq_url)
     
     try:
