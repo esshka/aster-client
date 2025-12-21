@@ -10,7 +10,7 @@ packages = [{include = "aster_client", from = "src"}]
 python = "^3.11"
 aiohttp = "^3.13.2"
 python-dotenv = "^1.2.1"
-pyzmq = "^27.1.0"
+nats-py = "^2.9.0"
 pyyaml = "^6.0"
 
 [tool.poetry.group.test]

@@ -1,10 +1,10 @@
 # Aster Client Configuration
 # Copy this file to config.yml and customize for your environment
 
-# ZeroMQ Configuration
-zmq:
-  url: "tcp://127.0.0.1:5556"
-  topic: "orders"
+# NATS Configuration
+nats:
+  url: "nats://localhost:4222"
+  subject: "orders"
 
 # Logging Configuration  
 logging:

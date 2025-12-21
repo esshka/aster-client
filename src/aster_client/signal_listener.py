@@ -1,11 +1,11 @@
 """
-ZMQ Signal Listener - Listens for trading signals via ZeroMQ and executes them.
+NATS Signal Listener - Listens for trading signals via NATS and executes them.
 
 Location: src/aster_client/signal_listener.py
 Purpose: Receive ENTRY/EXIT/PARTIAL_EXIT signals from run_realtime.py and execute trades
 Relevant files: models/signal_models.py, account_pool.py, bbo.py
 
-This module provides the ZMQSignalListener class which handles trading signals
+This module provides the NATSSignalListener class which handles trading signals
 from the Python realtime trading pipeline (run_realtime.py).
 
 Symbol format: Accepts both SOL_USDT and SOLUSDT formats (auto-converted to Binance format)
@@ -52,9 +52,9 @@ Supported message formats from run_realtime.py:
     "timestamp": "2025-12-14T17:22:47..."
 }
 
-ZMQ Configuration:
-- Default URL: tcp://127.0.0.1:5556
-- Topic: "orders" (multipart message format)
+NATS Configuration:
+- Default URL: nats://localhost:4222
+- Subject: "orders"
 """
 
 import asyncio
@@ -67,8 +67,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 
 import yaml
-import zmq
-import zmq.asyncio
+from nats.aio.client import Client as NATS
 
 from .account_pool import AccountPool, AccountConfig
 from .account_ws import AccountWebSocket
@@ -80,9 +79,9 @@ from .models.orders import OrderRequest
 logger = logging.getLogger(__name__)
 
 
-class ZMQSignalListener:
+class NATSSignalListener:
     """
-    Listens for trading signals via ZeroMQ and executes them with position tracking.
+    Listens for trading signals via NATS and executes them with position tracking.
     
     This listener:
     - Loads accounts from accounts_config.yml
@@ -93,8 +92,8 @@ class ZMQSignalListener:
 
     def __init__(
         self,
-        zmq_url: Optional[str] = None,
-        topic: str = "orders",
+        nats_url: Optional[str] = None,
+        subject: str = "orders",
         config_path: str = "accounts_config.yml",
         log_dir: str = "logs",
     ):
@@ -102,22 +101,22 @@ class ZMQSignalListener:
         Initialize the signal listener.
         
         Args:
-            zmq_url: ZMQ publisher URL. If None, uses ZMQ_URL env var.
-            topic: Topic to subscribe to (default: "orders")
+            nats_url: NATS server URL. If None, uses NATS_URL env var.
+            subject: Subject to subscribe to (default: "orders")
             config_path: Path to accounts config YAML file
             log_dir: Directory for log files
         """
-        if zmq_url is None:
-            zmq_url = os.environ.get("ZMQ_URL", "tcp://127.0.0.1:5556")
+        if nats_url is None:
+            nats_url = os.environ.get("NATS_URL", "nats://localhost:4222")
         
-        self.zmq_url = zmq_url
-        self.topic = topic
+        self.nats_url = nats_url
+        self.subject = subject
         self.config_path = config_path
         self.log_dir = log_dir
         
-        # ZMQ setup
-        self.ctx = zmq.asyncio.Context()
-        self.socket = self.ctx.socket(zmq.SUB)
+        # NATS setup
+        self.nc = NATS()
+        self.subscription = None
         self.running = False
         
         # Account management
@@ -221,7 +220,7 @@ class ZMQSignalListener:
 
     async def start(self):
         """Start the signal listener."""
-        logger.info(f"🚀 Starting ZMQ Signal Listener...")
+        logger.info(f"🚀 Starting NATS Signal Listener...")
         
         # Load configuration
         self._load_config()
@@ -230,10 +229,9 @@ class ZMQSignalListener:
             logger.error("No accounts configured!")
             return
         
-        # Connect to ZMQ
-        logger.info(f"Connecting to ZMQ publisher at {self.zmq_url}...")
-        self.socket.connect(self.zmq_url)
-        self.socket.subscribe(self.topic.encode())
+        # Connect to NATS
+        logger.info(f"Connecting to NATS server at {self.nats_url}...")
+        await self.nc.connect(self.nats_url)
         self.running = True
         
         # Start BBO WebSocket
@@ -254,33 +252,28 @@ class ZMQSignalListener:
             await ws.start()
             self.account_websockets[acc_config.id] = ws
         
-        logger.info(f"🎧 Listening for signals on topic '{self.topic}'...")
+        logger.info(f"🎧 Listening for signals on subject '{self.subject}'...")
         
-        # Main message loop
-        while self.running:
+        # Subscribe to NATS subject
+        async def message_handler(msg):
             try:
-                if self.topic:
-                    msg_parts = await self.socket.recv_multipart()
-                    payload = msg_parts[1] if len(msg_parts) >= 2 else msg_parts[0]
-                else:
-                    payload = await self.socket.recv()
+                payload = msg.data.decode()
+                message = json.loads(payload)
+                logger.info(f"📨 Received message: type={message.get('type', 'signal')}, "
+                           f"action={message.get('action', 'N/A')}")
                 
-                try:
-                    message = json.loads(payload)
-                    logger.info(f"📨 Received message: type={message.get('type', 'signal')}, "
-                               f"action={message.get('action', 'N/A')}")
-                    
-                    asyncio.create_task(self.process_message(message))
-                    
-                except json.JSONDecodeError as e:
-                    logger.error(f"Failed to decode JSON: {e}")
-                    
-            except asyncio.CancelledError:
-                logger.info("Signal listener cancelled")
-                break
+                asyncio.create_task(self.process_message(message))
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to decode JSON: {e}")
             except Exception as e:
-                logger.error(f"Error in message loop: {e}", exc_info=True)
-                await asyncio.sleep(1)
+                logger.error(f"Error processing message: {e}", exc_info=True)
+        
+        self.subscription = await self.nc.subscribe(self.subject, cb=message_handler)
+        
+        # Keep running until stopped
+        while self.running:
+            await asyncio.sleep(1)
 
     async def stop(self):
         """Stop the signal listener."""
@@ -297,9 +290,10 @@ class ZMQSignalListener:
         # Close public client
         await self.public_client.close()
         
-        # Close ZMQ
-        self.socket.close()
-        self.ctx.term()
+        # Close NATS
+        if self.subscription:
+            await self.subscription.unsubscribe()
+        await self.nc.close()
         
         # Cleanup logging
         if self.file_handler:
@@ -715,3 +709,7 @@ class ZMQSignalListener:
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 success = sum(1 for r in results if r is not None and not isinstance(r, Exception))
                 logger.info(f"✅ PARTIAL_EXIT completed: {success}/{len(tasks)} accounts")
+
+
+# Backward-compatible alias
+ZMQSignalListener = NATSSignalListener

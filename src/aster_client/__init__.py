@@ -38,8 +38,8 @@ from .trades import (
     calculate_tp_sl_prices,
     wait_for_order_fill,
 )
-from .zmq_listener import ZMQTradeListener
-from .signal_listener import ZMQSignalListener
+from .zmq_listener import NATSTradeListener, ZMQTradeListener
+from .signal_listener import NATSSignalListener, ZMQSignalListener
 from .account_ws import AccountWebSocket
 
 __all__ = [
@@ -64,9 +64,13 @@ __all__ = [
     "create_trade",
     "calculate_tp_sl_prices",
     "wait_for_order_fill",
+    # NATS Listeners
+    "NATSTradeListener",
+    "NATSSignalListener",
+    # Backward-compatible aliases
     "ZMQTradeListener",
-    # Signal Listener (MEXC-style)
     "ZMQSignalListener",
+    # WebSocket
     "AccountWebSocket",
     "SignalMessage",
     "PositionState",

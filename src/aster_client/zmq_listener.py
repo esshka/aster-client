@@ -1,7 +1,11 @@
 """
-ZMQ Trade Listener - Listens for trade commands via ZeroMQ and executes them in parallel.
+NATS Trade Listener - Listens for trade commands via NATS and executes them in parallel.
 
-This module provides the ZMQTradeListener class which subscribes to a ZeroMQ topic,
+Location: src/aster_client/zmq_listener.py
+Purpose: Process trade commands from NATS and execute on multiple accounts
+Relevant files: account_client.py, account_pool.py, bbo.py, trades.py
+
+This module provides the NATSTradeListener class which subscribes to a NATS subject,
 receives trade configuration messages, and executes trades across multiple accounts.
 Accounts are loaded from a YAML config file at startup.
 
@@ -61,8 +65,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
-import zmq
-import zmq.asyncio
+from nats.aio.client import Client as NATS
 
 from .account_client import AsterClient
 from .account_pool import AccountPool, AccountConfig
@@ -74,41 +77,40 @@ from .bbo import BBOPriceCalculator
 logger = logging.getLogger(__name__)
 
 
-class ZMQTradeListener:
+class NATSTradeListener:
     """
-    Listens for trade commands via ZeroMQ and executes them.
+    Listens for trade commands via NATS and executes them.
     
     Attributes:
-        zmq_url: The ZMQ URL to subscribe to (e.g., "tcp://127.0.0.1:5556")
-        topic: The topic to subscribe to (default: "")
-        ctx: ZMQ context
-        socket: ZMQ subscriber socket
+        nats_url: The NATS URL to connect to (e.g., "nats://localhost:4222")
+        subject: The subject to subscribe to (default: "orders")
+        nc: NATS client
     """
     
     def __init__(
         self, 
-        zmq_url: Optional[str] = None, 
-        topic: str = "", 
+        nats_url: Optional[str] = None, 
+        subject: str = "orders", 
         log_dir: str = "logs",
         accounts: Optional[List[Dict[str, Any]]] = None,
     ):
         """
-        Initialize the ZMQ listener.
+        Initialize the NATS listener.
         
         Args:
-            zmq_url: URL of the ZMQ publisher. If None, uses ZMQ_URL env var or default.
-            topic: Topic to subscribe to (empty string for all topics)
+            nats_url: URL of the NATS server. If None, uses NATS_URL env var or default.
+            subject: Subject to subscribe to
             log_dir: Directory to store session log files (default: "logs")
             accounts: List of account dicts with id, api_key, api_secret, quantity, simulation.
                       If provided, these accounts are used for all trade messages.
         """
-        if zmq_url is None:
-            zmq_url = os.environ.get("ZMQ_URL", "tcp://127.0.0.1:5556")
+        if nats_url is None:
+            nats_url = os.environ.get("NATS_URL", "nats://localhost:4222")
             
-        self.zmq_url = zmq_url
-        self.topic = topic
-        self.ctx = zmq.asyncio.Context()
-        self.socket = self.ctx.socket(zmq.SUB)
+        self.nats_url = nats_url
+        self.subject = subject
+        self.nc = NATS()
+        self.subscription = None
         self.running = False
         self.log_dir = log_dir
         self.file_handler = None
@@ -140,9 +142,8 @@ class ZMQTradeListener:
         
     async def start(self):
         """Start listening for messages."""
-        logger.info(f"Connecting to ZMQ publisher at {self.zmq_url}...")
-        self.socket.connect(self.zmq_url)
-        self.socket.subscribe(self.topic)
+        logger.info(f"Connecting to NATS server at {self.nats_url}...")
+        await self.nc.connect(self.nats_url)
         self.running = True
         
         # Start BBO WebSocket client
@@ -156,51 +157,41 @@ class ZMQTradeListener:
         except Exception as e:
             logger.warning(f"Failed to warmup symbol cache: {e}. Will fetch symbols on-demand.")
         
-        logger.info(f"Listening for messages on topic '{self.topic}'...")
+        logger.info(f"Listening for messages on subject '{self.subject}'...")
         
-        while self.running:
+        # Define message handler
+        async def message_handler(msg):
             try:
-                # Receive message
-                # We expect multipart message: [topic, payload] if topic is set
-                # or just payload if we just recv_json/string depending on sender
-                # For simplicity, let's assume the sender sends a JSON string.
-                # If using topics, it's usually: socket.send_multipart([topic, json_bytes])
+                payload = msg.data.decode()
+                message = json.loads(payload)
+                logger.info(f"Received NATS message - Subject: '{self.subject}', Payload size: {len(payload)} bytes")
                 
-                if self.topic:
-                    msg_parts = await self.socket.recv_multipart()
-                    # msg_parts[0] is topic, msg_parts[1] is payload
-                    if len(msg_parts) >= 2:
-                        payload = msg_parts[1]
-                    else:
-                        payload = msg_parts[0] # Fallback
-                else:
-                    payload = await self.socket.recv()
+                # Log sanitized message details
+                self._log_message_received(message)
                 
-                try:
-                    message = json.loads(payload)
-                    logger.info(f"Received ZMQ message - Topic: '{self.topic}', Payload size: {len(payload)} bytes")
-                    
-                    # Log sanitized message details
-                    self._log_message_received(message)
-                    
-                    # Process in background to not block receiving new messages
-                    asyncio.create_task(self.process_message(message))
-                    
-                except json.JSONDecodeError as e:
-                    logger.error(f"Failed to decode JSON message: {e}. Payload preview: {payload[:100]}")
-                    
-            except asyncio.CancelledError:
-                logger.info("ZMQ listener cancelled")
-                break
+                # Process in background to not block receiving new messages
+                asyncio.create_task(self.process_message(message))
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to decode JSON message: {e}. Payload preview: {payload[:100]}")
             except Exception as e:
-                logger.error(f"Error in ZMQ loop: {e}", exc_info=True)
-                await asyncio.sleep(1)  # Prevent tight loop on error
+                logger.error(f"Error processing NATS message: {e}", exc_info=True)
+        
+        # Subscribe to NATS subject
+        self.subscription = await self.nc.subscribe(self.subject, cb=message_handler)
+        
+        # Keep running until stopped
+        while self.running:
+            await asyncio.sleep(1)
                 
     async def stop(self):
         """Stop the listener."""
         self.running = False
-        self.socket.close()
-        self.ctx.term()
+        
+        # Close NATS connection
+        if self.subscription:
+            await self.subscription.unsubscribe()
+        await self.nc.close()
         
         # Stop BBO WebSocket client
         await self.bbo_calculator.stop()
@@ -211,7 +202,7 @@ class ZMQTradeListener:
         # Close all cached account clients
         await self._cleanup_clients()
         
-        logger.info("ZMQ listener stopped")
+        logger.info("NATS listener stopped")
         
         # Clean up file handler
         if self.file_handler:
@@ -353,7 +344,7 @@ class ZMQTradeListener:
     def _setup_session_logging(self):
         """
         Set up a session-specific log file for this listener instance.
-        Log files are named with timestamp: zmq_listener_YYYYMMDD_HHMMSS.log
+        Log files are named with timestamp: nats_listener_YYYYMMDD_HHMMSS.log
         """
         # Create logs directory if it doesn't exist
         log_path = Path(self.log_dir)
@@ -361,7 +352,7 @@ class ZMQTradeListener:
         
         # Generate unique log filename with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_filename = f"zmq_listener_{timestamp}.log"
+        log_filename = f"nats_listener_{timestamp}.log"
         log_filepath = log_path / log_filename
         
         # Create file handler with detailed formatting
@@ -917,3 +908,5 @@ class ZMQTradeListener:
         )
 
 
+# Backward-compatible alias
+ZMQTradeListener = NATSTradeListener

@@ -1,10 +1,14 @@
 #!/usr/bin/env python
 """
-Run ZMQ Listener - Entry point script for the ZMQ Trade Listener.
+Run NATS Listener - Entry point script for the NATS Trade Listener.
+
+Location: run_listener.py
+Purpose: Entry point for running the NATS signal listener
+Relevant files: src/aster_client/zmq_listener.py, config.yml
 
 Usage:
     poetry run python run_listener.py
-    poetry run python run_listener.py --zmq_url tcp://127.0.0.1:5557
+    poetry run python run_listener.py --nats_url nats://localhost:4222
 """
 
 import asyncio
@@ -37,13 +41,13 @@ def load_accounts():
 
 def main():
     config = load_config()
-    zmq_config = config.get("zmq", {})
+    nats_config = config.get("nats", {})
     logging_config = config.get("logging", {})
     trading_config = config.get("trading", {})
     
-    parser = argparse.ArgumentParser(description="Run ZMQ Trade Listener")
-    parser.add_argument("--zmq_url", default=zmq_config.get("url", "tcp://127.0.0.1:5556"))
-    parser.add_argument("--topic", default=zmq_config.get("topic", "orders"))
+    parser = argparse.ArgumentParser(description="Run NATS Trade Listener")
+    parser.add_argument("--nats_url", default=nats_config.get("url", "nats://localhost:4222"))
+    parser.add_argument("--subject", default=nats_config.get("subject", "orders"))
     parser.add_argument("--log_dir", default=logging_config.get("log_dir", "logs"))
     parser.add_argument("--log_level", default=logging_config.get("level", "INFO"))
     parser.add_argument("--symbol", default=trading_config.get("default_symbol", "SOLUSDT"))
@@ -59,21 +63,21 @@ def main():
     accounts = load_accounts()
     
     # Import after parsing args to avoid the warning
-    from aster_client.zmq_listener import ZMQTradeListener
+    from aster_client.zmq_listener import NATSTradeListener
     from aster_client.bbo import BBOPriceCalculator
     
     # Initialize BBO with configured symbol
     BBOPriceCalculator(default_symbol=args.symbol)
     
     async def run():
-        listener = ZMQTradeListener(
-            zmq_url=args.zmq_url,
-            topic=args.topic,
+        listener = NATSTradeListener(
+            nats_url=args.nats_url,
+            subject=args.subject,
             log_dir=args.log_dir,
             accounts=accounts
         )
         
-        print(f"🚀 Starting ZMQ Listener on {args.zmq_url} (topic: '{args.topic}')")
+        print(f"🚀 Starting NATS Listener on {args.nats_url} (subject: '{args.subject}')")
         print(f"📋 Loaded {len(accounts)} accounts from config")
         print(f"📊 BBO WebSocket symbol: {args.symbol}")
         
