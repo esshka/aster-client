@@ -212,6 +212,69 @@ class AccountWebSocket:
                     logger.error(f"[{self.account_id}] Failed to fetch positions: {error}")
         except Exception as e:
             logger.error(f"[{self.account_id}] Error fetching initial positions: {e}")
+        
+        # Fetch open orders for allowed symbols
+        await self._fetch_initial_orders()
+    
+    async def _fetch_initial_orders(self):
+        """Fetch open orders via REST API and log them."""
+        try:
+            import hashlib
+            import hmac
+            from urllib.parse import urlencode
+            
+            # Fetch orders for each allowed symbol
+            for symbol in self._allowed_symbols:
+                url = f"{self.base_url}/fapi/v1/allOrders"
+                
+                # Generate signature
+                timestamp = str(int(time.time() * 1000))
+                auth_params = {
+                    "symbol": symbol,
+                    "timestamp": timestamp,
+                    "recvWindow": self.signer.recv_window,
+                    "limit": 100,
+                }
+                
+                query_string = urlencode(sorted(auth_params.items()))
+                signature = hmac.new(
+                    self.credentials.api_secret.encode(),
+                    query_string.encode(),
+                    hashlib.sha256,
+                ).hexdigest()
+                
+                params_list = sorted(auth_params.items())
+                params_list.append(("signature", signature))
+                
+                headers = self.signer.get_auth_headers()
+                
+                async with self.session.get(url, params=params_list, headers=headers) as resp:
+                    if resp.status == 200:
+                        orders = await resp.json()
+                        # Filter for active orders only (NEW status)
+                        active_orders = [o for o in orders if o.get("status") == "NEW"]
+                        
+                        if active_orders:
+                            logger.info(f"[{self.account_id}] Open orders for {symbol}:")
+                            for order in active_orders:
+                                order_type = order.get("type", "UNKNOWN")
+                                side = order.get("side", "")
+                                price = order.get("price") or order.get("stopPrice", "0")
+                                qty = order.get("origQty", "0")
+                                position_side = order.get("positionSide", "BOTH")
+                                order_id = order.get("orderId")
+                                
+                                logger.info(
+                                    f"  [{order_id}] {order_type} {side} {qty} @ {price} "
+                                    f"(positionSide={position_side})"
+                                )
+                        else:
+                            logger.info(f"[{self.account_id}] No open orders for {symbol}")
+                    else:
+                        error = await resp.text()
+                        logger.error(f"[{self.account_id}] Failed to fetch orders for {symbol}: {error}")
+        except Exception as e:
+            logger.error(f"[{self.account_id}] Error fetching initial orders: {e}")
 
     async def stop(self):
         """Stop the WebSocket connection."""
