@@ -184,16 +184,17 @@ class NATSSignalListener:
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
         
-        # Load position sizing
+        # Load global position sizing (fallback)
         if "position_sizing" in config:
             self.position_sizing = PositionSizingConfig.from_dict(config["position_sizing"])
         
-        logger.info(f"💰 Position Sizing: deposit={self.position_sizing.deposit_size} USDT, "
+        logger.info(f"💰 Default Position Sizing: deposit={self.position_sizing.deposit_size} USDT, "
                    f"R={self.position_sizing.r_percentage * 100}% = {self.position_sizing.r_value} USDT")
         
-        # Load accounts
+        # Load accounts with per-account position sizing
         accounts = config.get("accounts", [])
         self.account_configs = []
+        self.account_position_sizing: Dict[str, PositionSizingConfig] = {}
         
         for acc in accounts:
             account_config = AccountConfig(
@@ -204,6 +205,12 @@ class NATSSignalListener:
                 recv_window=acc.get("recv_window", 5000),
             )
             self.account_configs.append(account_config)
+            
+            # Per-account position sizing (optional, falls back to global)
+            if "position_sizing" in acc:
+                ps = PositionSizingConfig.from_dict(acc["position_sizing"])
+                self.account_position_sizing[acc["id"]] = ps
+                logger.info(f"   [{acc['id']}] Position Sizing: deposit={ps.deposit_size} USDT, R={ps.r_value} USDT")
         
         logger.info(f"📋 Loaded {len(self.account_configs)} accounts from {config_path}")
 
@@ -280,7 +287,7 @@ class NATSSignalListener:
         self.running = False
         
         # Stop account WebSockets
-        for ws in self.account_websockets.values():
+        for ws in list(self.account_websockets.values()):
             await ws.stop()
         self.account_websockets.clear()
         
@@ -342,7 +349,9 @@ class NATSSignalListener:
             elif action == "EXIT":
                 await self._handle_exit_signal(signal)
             elif action == "PARTIAL_EXIT":
-                await self._handle_partial_exit_signal(signal)
+                # PARTIAL_EXIT signals are filtered out - we use limit TP orders instead
+                logger.debug(f"Ignoring PARTIAL_EXIT signal for {signal.symbol} (handled by limit TP orders)")
+                return
             else:
                 logger.warning(f"Unknown action: {action}")
                 
@@ -369,13 +378,17 @@ class NATSSignalListener:
         return Decimal("1")
 
     async def _handle_entry_signal(self, signal: SignalMessage):
-        """Handle ENTRY signal - open new position."""
+        """Handle ENTRY signal - open new position with SL and limit TP orders."""
         logger.info(f"\n🚀 ENTRY Signal: {signal.direction} {signal.symbol} @ {signal.price}")
         
         if signal.stop_loss:
             logger.info(f"   Stop Loss: {signal.stop_loss}")
         if signal.position_size_r:
             logger.info(f"   Position Size: {signal.position_size_r}R")
+        if signal.tp_levels:
+            logger.info(f"   TP Levels: {len(signal.tp_levels)}")
+            for i, tp in enumerate(signal.tp_levels, 1):
+                logger.info(f"     TP{i}: {tp.price} ({tp.exit_pct*100:.0f}%)")
         
         # Check for existing positions
         for acc_config in self.account_configs:
@@ -417,21 +430,8 @@ class NATSSignalListener:
         
         logger.info(f"   Market: Bid={best_bid}, Ask={best_ask}")
         
-        # Calculate position size
+        # Get contract step size for this symbol
         contract_size = await self._get_contract_size(signal.symbol)
-        
-        quantity = self.position_sizing.calculate_quantity(
-            entry_price=signal.price,
-            position_size_r=signal.position_size_r or 1.0,
-            contract_size=contract_size,
-            leverage=20,
-        )
-        
-        if quantity <= 0:
-            logger.error("Calculated quantity is 0, skipping")
-            return
-        
-        logger.info(f"   Quantity: {quantity} contracts")
         
         # Execute on all accounts
         async with AccountPool(self.account_configs) as pool:
@@ -440,6 +440,25 @@ class NATSSignalListener:
                 client = pool.get_client(acc_config.id)
                 if not client:
                     continue
+                
+                # Get per-account position sizing or fall back to global
+                position_sizing = self.account_position_sizing.get(
+                    acc_config.id, self.position_sizing
+                )
+                
+                # Calculate quantity for this account
+                quantity = position_sizing.calculate_quantity(
+                    entry_price=signal.price,
+                    position_size_r=signal.position_size_r or 1.0,
+                    contract_size=contract_size,
+                    leverage=5,
+                )
+                
+                if quantity <= 0:
+                    logger.error(f"[{acc_config.id}] Calculated quantity is 0, skipping")
+                    continue
+                
+                logger.info(f"   [{acc_config.id}] Quantity: {quantity} (deposit={position_sizing.deposit_size})")
                 
                 key = f"{acc_config.id}:{signal.symbol}"
                 existing = self.positions.get(key)
@@ -458,7 +477,8 @@ class NATSSignalListener:
                         reduce_only=True,
                     )
                     
-                    async def close_and_open(c, acc_id, close_req, open_qty, signal):
+                    async def close_and_open_with_tp(c, acc_id, close_req, open_qty, signal):
+                        """Close existing position, then open new with SL and limit TP orders."""
                         # Close existing
                         try:
                             await c.place_order(close_req)
@@ -471,6 +491,7 @@ class NATSSignalListener:
                         
                         # Open new position
                         side = "buy" if signal.direction == "LONG" else "sell"
+                        exit_side = "sell" if signal.direction == "LONG" else "buy"
                         position_side = signal.direction
                         
                         open_request = OrderRequest(
@@ -479,18 +500,63 @@ class NATSSignalListener:
                             order_type="market",
                             quantity=open_qty,
                             position_side=position_side,
-                            stop_price=signal.stop_loss,
                         )
                         
                         try:
                             result = await c.place_order(open_request)
                             logger.info(f"[{acc_id}] Opened {signal.direction} position")
+                            
+                            # Place SL if provided
+                            if signal.stop_loss:
+                                sl_request = OrderRequest(
+                                    symbol=signal.symbol,
+                                    side=exit_side,
+                                    order_type="stop_market",
+                                    quantity=Decimal("0"),
+                                    stop_price=signal.stop_loss,
+                                    position_side=position_side,
+                                    close_position=True,
+                                )
+                                try:
+                                    sl_result = await c.place_order(sl_request)
+                                    logger.info(f"[{acc_id}] SL placed: {sl_result.order_id} @ {signal.stop_loss}")
+                                except Exception as e:
+                                    logger.error(f"[{acc_id}] Failed to place SL: {e}")
+                            
+                            # Place limit TP orders for each TP level
+                            if signal.tp_levels:
+                                remaining_qty = open_qty
+                                for i, tp in enumerate(signal.tp_levels, 1):
+                                    tp_qty = (open_qty * Decimal(str(tp.exit_pct))).quantize(
+                                        Decimal("1"), rounding=ROUND_DOWN
+                                    )
+                                    if i == len(signal.tp_levels):
+                                        tp_qty = remaining_qty
+                                    if tp_qty <= 0:
+                                        continue
+                                    remaining_qty -= tp_qty
+                                    
+                                    tp_request = OrderRequest(
+                                        symbol=signal.symbol,
+                                        side=exit_side,
+                                        order_type="limit",
+                                        quantity=tp_qty,
+                                        price=tp.price,
+                                        position_side=position_side,
+                                        time_in_force="gtc",
+                                    )
+                                    try:
+                                        tp_result = await c.place_order(tp_request)
+                                        logger.info(f"[{acc_id}] TP{i} placed: {tp_result.order_id} @ {tp.price} ({tp_qty} qty)")
+                                    except Exception as e:
+                                        logger.error(f"[{acc_id}] Failed to place TP{i}: {e}")
+                            
                             return result
                         except Exception as e:
                             logger.error(f"[{acc_id}] Failed to open position: {e}")
                             return None
                     
-                    task = close_and_open(client, acc_config.id, close_request, quantity, signal)
+                    task = close_and_open_with_tp(client, acc_config.id, close_request, quantity, signal)
                     tasks.append(task)
                 else:
                     # Just open new position
@@ -505,14 +571,20 @@ class NATSSignalListener:
                         position_side=position_side,
                     )
                     
-                    async def open_position(c, acc_id, req, sl_price, symbol, direction):
+                    async def open_position_with_tp(c, acc_id, req, sl_price, symbol, direction, total_qty, tp_levels):
+                        """
+                        Open position with market order, then place:
+                        1. SL order (stop_market, close_position=True)
+                        2. Limit TP orders for each TP level (reduce_only)
+                        """
                         try:
                             result = await c.place_order(req)
                             logger.info(f"[{acc_id}] Opened {direction} position: {result.order_id}")
                             
+                            exit_side = "sell" if direction == "LONG" else "buy"
+                            
                             # Place SL if provided
                             if sl_price:
-                                exit_side = "sell" if direction == "LONG" else "buy"
                                 sl_request = OrderRequest(
                                     symbol=symbol,
                                     side=exit_side,
@@ -528,14 +600,48 @@ class NATSSignalListener:
                                 except Exception as e:
                                     logger.error(f"[{acc_id}] Failed to place SL: {e}")
                             
+                            # Place limit TP orders for each TP level
+                            if tp_levels:
+                                remaining_qty = total_qty
+                                for i, tp in enumerate(tp_levels, 1):
+                                    # Calculate quantity for this TP level
+                                    tp_qty = (total_qty * Decimal(str(tp.exit_pct))).quantize(
+                                        Decimal("1"), rounding=ROUND_DOWN
+                                    )
+                                    
+                                    # For last TP level, use remaining quantity
+                                    if i == len(tp_levels):
+                                        tp_qty = remaining_qty
+                                    
+                                    if tp_qty <= 0:
+                                        continue
+                                    
+                                    remaining_qty -= tp_qty
+                                    
+                                    tp_request = OrderRequest(
+                                        symbol=symbol,
+                                        side=exit_side,
+                                        order_type="limit",
+                                        quantity=tp_qty,
+                                        price=tp.price,
+                                        position_side=direction,
+                                        time_in_force="gtc",
+                                    )
+                                    try:
+                                        tp_result = await c.place_order(tp_request)
+                                        logger.info(f"[{acc_id}] TP{i} placed: {tp_result.order_id} @ {tp.price} ({tp_qty} qty, {tp.exit_pct*100:.0f}%)")
+                                    except Exception as e:
+                                        logger.error(f"[{acc_id}] Failed to place TP{i} @ {tp.price}: {e}")
+                            
                             return result
                         except Exception as e:
                             logger.error(f"[{acc_id}] Failed to open position: {e}")
                             return None
                     
-                    task = open_position(
+                    task = open_position_with_tp(
                         client, acc_config.id, request,
-                        signal.stop_loss, signal.symbol, signal.direction
+                        signal.stop_loss, signal.symbol, signal.direction,
+                        quantity, signal.tp_levels
                     )
                     tasks.append(task)
             

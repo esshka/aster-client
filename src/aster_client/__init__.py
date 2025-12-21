@@ -38,7 +38,7 @@ from .trades import (
     calculate_tp_sl_prices,
     wait_for_order_fill,
 )
-from .zmq_listener import NATSTradeListener, ZMQTradeListener
+from .nats_listener import NATSTradeListener, ZMQTradeListener
 from .signal_listener import NATSSignalListener, ZMQSignalListener
 from .account_ws import AccountWebSocket
 

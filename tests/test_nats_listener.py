@@ -1,5 +1,5 @@
 """
-Tests for ZMQ Trade Listener module.
+Tests for NATS Trade Listener module.
 """
 import asyncio
 import json
@@ -7,7 +7,7 @@ import pytest
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from aster_client.zmq_listener import ZMQTradeListener
+from aster_client.nats_listener import NATSTradeListener
 from aster_client.trades import Trade, TradeStatus
 
 
@@ -41,24 +41,24 @@ def sample_trade_message():
     }
 
 
-class TestZMQTradeListener:
-    """Test suite for ZMQTradeListener class."""
+class TestNATSTradeListener:
+    """Test suite for NATSTradeListener class."""
     
     def test_initialization(self):
         """Test listener initialization."""
-        zmq_url = "tcp://127.0.0.1:5555"
-        topic = "trades"
+        nats_url = "nats://127.0.0.1:4222"
+        subject = "trades"
         
-        listener = ZMQTradeListener(zmq_url=zmq_url, topic=topic)
+        listener = NATSTradeListener(nats_url=nats_url, subject=subject)
         
-        assert listener.zmq_url == zmq_url
-        assert listener.topic == topic
+        assert listener.nats_url == nats_url
+        assert listener.subject == subject
         assert listener.running is False
     
     @pytest.mark.asyncio
     async def test_process_message_extracts_parameters(self, sample_trade_message):
         """Test that process_message correctly extracts trade parameters."""
-        listener = ZMQTradeListener(zmq_url="tcp://127.0.0.1:5555")
+        listener = NATSTradeListener(nats_url="nats://127.0.0.1:4222")
         
         # Mock public_client methods
         listener.public_client.get_order_book = AsyncMock(return_value={
@@ -82,7 +82,7 @@ class TestZMQTradeListener:
         listener._get_or_create_client = mock_get_or_create_client
         
         # Mock create_trade
-        with patch('aster_client.zmq_listener.create_trade') as mock_create_trade:
+        with patch('aster_client.nats_listener.create_trade') as mock_create_trade:
             mock_trade = Trade(
                 trade_id="test_trade",
                 symbol="BTCUSDT",
@@ -105,7 +105,7 @@ class TestZMQTradeListener:
     @pytest.mark.asyncio
     async def test_process_message_handles_missing_accounts(self):
         """Test that process_message handles missing accounts gracefully."""
-        listener = ZMQTradeListener(zmq_url="tcp://127.0.0.1:5555")
+        listener = NATSTradeListener(nats_url="nats://127.0.0.1:4222")
         
         message_no_accounts = {
             "symbol": "BTCUSDT",
@@ -122,7 +122,7 @@ class TestZMQTradeListener:
     @pytest.mark.asyncio
     async def test_process_message_handles_missing_fields(self):
         """Test that process_message handles missing required fields."""
-        listener = ZMQTradeListener(zmq_url="tcp://127.0.0.1:5555")
+        listener = NATSTradeListener(nats_url="nats://127.0.0.1:4222")
         
         incomplete_message = {
             "symbol": "BTCUSDT",
@@ -136,7 +136,7 @@ class TestZMQTradeListener:
     @pytest.mark.asyncio
     async def test_process_message_parallel_execution(self, sample_trade_message):
         """Test that trades are executed in parallel."""
-        listener = ZMQTradeListener(zmq_url="tcp://127.0.0.1:5555")
+        listener = NATSTradeListener(nats_url="nats://127.0.0.1:4222")
         
         execution_order = []
         
@@ -166,7 +166,7 @@ class TestZMQTradeListener:
         # Mock BBO calculator
         listener.bbo_calculator.get_bbo = MagicMock(return_value=(Decimal("90000.0"), Decimal("90001.0")))
         
-        with patch('aster_client.zmq_listener.create_trade', side_effect=mock_create_trade):
+        with patch('aster_client.nats_listener.create_trade', side_effect=mock_create_trade):
             # Mock _get_or_create_client
             async def mock_get_or_create_client(account_id, api_key, api_secret, simulation=False):
                 return AsyncMock(id=account_id)
@@ -181,7 +181,7 @@ class TestZMQTradeListener:
     @pytest.mark.asyncio
     async def test_process_message_handles_trade_failures(self, sample_trade_message):
         """Test that process_message handles individual trade failures."""
-        listener = ZMQTradeListener(zmq_url="tcp://127.0.0.1:5555")
+        listener = NATSTradeListener(nats_url="nats://127.0.0.1:4222")
         
         # Mock public_client methods
         listener.public_client.get_order_book = AsyncMock(return_value={
@@ -210,7 +210,7 @@ class TestZMQTradeListener:
                 status=TradeStatus.ACTIVE
             )
         
-        with patch('aster_client.zmq_listener.create_trade', side_effect=mock_create_trade):
+        with patch('aster_client.nats_listener.create_trade', side_effect=mock_create_trade):
             # Mock _get_or_create_client
             async def mock_get_or_create_client(account_id, api_key, api_secret, simulation=False):
                 return AsyncMock()
@@ -223,27 +223,32 @@ class TestZMQTradeListener:
     @pytest.mark.asyncio
     async def test_stop_terminates_listener(self):
         """Test that stop() properly terminates the listener."""
-        listener = ZMQTradeListener(zmq_url="tcp://127.0.0.1:5555")
+        listener = NATSTradeListener(nats_url="nats://127.0.0.1:4222")
         
-        # Mock the socket
-        listener.socket = MagicMock()
-        listener.ctx = MagicMock()
+        # Mock the NATS connection
+        listener.nc = MagicMock()
+        listener.nc.close = AsyncMock()
+        listener.subscription = MagicMock()
+        listener.subscription.unsubscribe = AsyncMock()
         listener.running = True
         
         # Mock BBO calculator stop
         listener.bbo_calculator.stop = AsyncMock()
         
+        # Mock public_client close
+        listener.public_client.close = AsyncMock()
+        
         await listener.stop()
         
         assert listener.running is False
-        assert listener.socket.close.called
-        assert listener.ctx.term.called
+        assert listener.subscription.unsubscribe.called
+        assert listener.nc.close.called
         assert listener.bbo_calculator.stop.called
     
     @pytest.mark.asyncio
     async def test_process_message_uses_correct_quantities(self, sample_trade_message):
         """Test that each account gets its specified quantity."""
-        listener = ZMQTradeListener(zmq_url="tcp://127.0.0.1:5555")
+        listener = NATSTradeListener(nats_url="nats://127.0.0.1:4222")
         
         # Mock public_client methods
         listener.public_client.get_order_book = AsyncMock(return_value={
@@ -268,7 +273,7 @@ class TestZMQTradeListener:
                 status=TradeStatus.ACTIVE
             )
         
-        with patch('aster_client.zmq_listener.create_trade', side_effect=mock_create_trade):
+        with patch('aster_client.nats_listener.create_trade', side_effect=mock_create_trade):
             # Mock _get_or_create_client
             async def mock_get_or_create_client(account_id, api_key, api_secret, simulation=False):
                 return AsyncMock()

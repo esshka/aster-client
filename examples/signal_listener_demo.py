@@ -1,18 +1,22 @@
 """
-Signal Listener Demo - Demonstrates the ZMQ Signal Listener.
+Signal Listener Demo - Demonstrates the NATS Signal Listener.
 
-This script connects to a ZMQ publisher and listens for ENTRY/EXIT/PARTIAL_EXIT
+Location: examples/signal_listener_demo.py
+Purpose: Demo script for running the NATS signal listener
+Relevant files: signal_listener.py, accounts_config.yml
+
+This script connects to a NATS server and listens for ENTRY/EXIT/PARTIAL_EXIT
 signals, executing them across all accounts configured in accounts_config.yml.
 
 Usage:
-    python examples/signal_listener_demo.py
+    poetry run python examples/signal_listener_demo.py
     
-    # With custom ZMQ URL:
-    ZMQ_URL=tcp://192.168.1.100:5555 python examples/signal_listener_demo.py
+    # With custom NATS URL:
+    NATS_URL=nats://192.168.1.100:4222 poetry run python examples/signal_listener_demo.py
 
 Requirements:
     - accounts_config.yml in the project root with account credentials
-    - ZMQ publisher sending signals on the "orders" topic
+    - NATS server publishing signals on the "orders" subject
 """
 
 import asyncio
@@ -24,7 +28,7 @@ from pathlib import Path
 # Add parent directory for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from aster_client import ZMQSignalListener
+from aster_client import NATSSignalListener
 
 
 # Configure logging
@@ -39,12 +43,12 @@ logger = logging.getLogger(__name__)
 async def main():
     """Main entry point."""
     logger.info("=" * 60)
-    logger.info("🚀 ZMQ Signal Listener Demo")
+    logger.info("🚀 NATS Signal Listener Demo")
     logger.info("=" * 60)
     
     # Create listener
-    listener = ZMQSignalListener(
-        topic="orders",
+    listener = NATSSignalListener(
+        subject="orders",
         config_path="accounts_config.yml",
     )
     

@@ -1,7 +1,7 @@
 """
 NATS Trade Listener - Listens for trade commands via NATS and executes them in parallel.
 
-Location: src/aster_client/zmq_listener.py
+Location: src/aster_client/nats_listener.py
 Purpose: Process trade commands from NATS and execute on multiple accounts
 Relevant files: account_client.py, account_pool.py, bbo.py, trades.py
 
@@ -93,6 +93,7 @@ class NATSTradeListener:
         subject: str = "orders", 
         log_dir: str = "logs",
         accounts: Optional[List[Dict[str, Any]]] = None,
+        allowed_symbols: Optional[List[str]] = None,
     ):
         """
         Initialize the NATS listener.
@@ -103,6 +104,7 @@ class NATSTradeListener:
             log_dir: Directory to store session log files (default: "logs")
             accounts: List of account dicts with id, api_key, api_secret, quantity, simulation.
                       If provided, these accounts are used for all trade messages.
+            allowed_symbols: List of symbols to process. If empty/None, all symbols are accepted.
         """
         if nats_url is None:
             nats_url = os.environ.get("NATS_URL", "nats://localhost:4222")
@@ -114,6 +116,9 @@ class NATSTradeListener:
         self.running = False
         self.log_dir = log_dir
         self.file_handler = None
+        
+        # Symbol filter - only process these symbols (empty = all)
+        self._allowed_symbols = set(s.upper() for s in (allowed_symbols or []))
         
         # Accounts loaded from config (used if not specified in message)
         self._config_accounts = accounts or []
@@ -139,6 +144,9 @@ class NATSTradeListener:
         
         if self._config_accounts:
             logger.info(f"Loaded {len(self._config_accounts)} accounts from config")
+        
+        if self._allowed_symbols:
+            logger.info(f"Symbol filter active: {', '.join(sorted(self._allowed_symbols))}")
         
     async def start(self):
         """Start listening for messages."""
@@ -467,7 +475,13 @@ class NATSTradeListener:
                 logger.debug("Heartbeat message processed successfully")
                 return
             
-            elif msg_type == "order":
+            # Check symbol filter (skip heartbeats which have no symbol)
+            symbol = message.get("symbol", "").upper().replace("_", "").replace("/", "")
+            if self._allowed_symbols and symbol not in self._allowed_symbols:
+                logger.debug(f"Skipping message for {symbol} (not in allowed symbols)")
+                return
+            
+            if msg_type == "order":
                 await self._process_order_message(message)
                 return
             

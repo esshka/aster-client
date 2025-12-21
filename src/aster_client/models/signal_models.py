@@ -144,7 +144,7 @@ class PositionSizingConfig:
         self,
         entry_price: Decimal,
         position_size_r: float,
-        contract_size: Decimal = Decimal("1"),
+        contract_size: Decimal = Decimal("0.001"),
         leverage: int = 20,
     ) -> Decimal:
         """
@@ -153,7 +153,7 @@ class PositionSizingConfig:
         Args:
             entry_price: Entry price for the position
             position_size_r: Position size in R units
-            contract_size: Contract size (e.g., 0.1 for some tokens)
+            contract_size: Step size for the symbol (e.g., 0.001 for BTC)
             leverage: Leverage to use
             
         Returns:
@@ -162,21 +162,18 @@ class PositionSizingConfig:
         # Target Notional = position_size_r * R value
         target_notional = Decimal(str(position_size_r)) * self.r_value
         
-        # Contract Value = entry_price * contract_size
-        contract_value = entry_price * contract_size
-        
-        # Contracts = Target Notional / Contract Value
-        contracts = target_notional / contract_value
+        # Quantity = Target Notional / entry_price
+        quantity = target_notional / entry_price
         
         # Safety: Cap at max buying power (deposit * leverage * 0.95)
         max_notional = self.deposit_size * Decimal(str(leverage)) * Decimal("0.95")
-        max_contracts = max_notional / contract_value
+        max_quantity = max_notional / entry_price
         
-        if contracts > max_contracts:
-            contracts = max_contracts
+        if quantity > max_quantity:
+            quantity = max_quantity
         
-        # Round down to whole number (most exchanges use integer contracts)
-        return contracts.quantize(Decimal("1"), rounding="ROUND_DOWN")
+        # Round down to contract_size (step size)
+        return (quantity / contract_size).quantize(Decimal("1"), rounding="ROUND_DOWN") * contract_size
     
     @classmethod
     def from_dict(cls, data: dict) -> "PositionSizingConfig":
