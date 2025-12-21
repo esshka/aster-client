@@ -273,11 +273,13 @@ class AccountWebSocket:
             if position_amount == 0:
                 # Position closed
                 if symbol in self.positions:
+                    closed_position = self.positions[symbol]
                     logger.info(f"[{self.account_id}] Position closed: {symbol}")
                     del self.positions[symbol]
                     if self.on_position_update:
-                        # Send None to indicate closed position
-                        self.on_position_update(self.account_id, None)
+                        # Send closed position (with quantity=0) to include symbol info
+                        closed_position.quantity = Decimal("0")
+                        self.on_position_update(self.account_id, closed_position)
             else:
                 # Determine side from amount or position_side field
                 if position_side in ("LONG", "SHORT"):

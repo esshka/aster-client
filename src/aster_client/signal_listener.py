@@ -96,6 +96,7 @@ class NATSSignalListener:
         subject: str = "orders",
         config_path: str = "accounts_config.yml",
         log_dir: str = "logs",
+        allowed_symbols: Optional[List[str]] = None,
     ):
         """
         Initialize the signal listener.
@@ -105,6 +106,7 @@ class NATSSignalListener:
             subject: Subject to subscribe to (default: "orders")
             config_path: Path to accounts config YAML file
             log_dir: Directory for log files
+            allowed_symbols: List of symbols to accept (empty = all)
         """
         if nats_url is None:
             nats_url = os.environ.get("NATS_URL", "nats://localhost:4222")
@@ -113,6 +115,9 @@ class NATSSignalListener:
         self.subject = subject
         self.config_path = config_path
         self.log_dir = log_dir
+        
+        # Symbol filter (normalized to uppercase without separators)
+        self._allowed_symbols = set(s.upper().replace("_", "").replace("/", "") for s in (allowed_symbols or []))
         
         # NATS setup
         self.nc = NATS()
@@ -221,15 +226,21 @@ class NATSSignalListener:
     def _on_position_update(self, account_id: str, position: Optional[PositionState]):
         """Callback for WebSocket position updates."""
         if position is None:
-            # Position closed - remove from tracking and cancel related orders
+            # Old behavior - should not happen anymore, but handle gracefully
             for key in list(self.positions.keys()):
                 if key.startswith(f"{account_id}:"):
                     symbol = key.split(":", 1)[1]
                     del self.positions[key]
-                    
-                    # Cancel any SL/TP orders for this position
                     if key in self.position_orders:
                         asyncio.create_task(self._cancel_position_orders(account_id, symbol, key))
+        elif position.quantity == 0:
+            # Position closed - cancel related orders
+            key = f"{account_id}:{position.symbol}"
+            if key in self.positions:
+                del self.positions[key]
+            if key in self.position_orders:
+                logger.info(f"[{account_id}] Position {position.symbol} closed, canceling SL/TP orders...")
+                asyncio.create_task(self._cancel_position_orders(account_id, position.symbol, key))
         else:
             key = f"{account_id}:{position.symbol}"
             self.positions[key] = position
@@ -343,10 +354,17 @@ class NATSSignalListener:
         # Close public client
         await self.public_client.close()
         
-        # Close NATS
-        if self.subscription:
-            await self.subscription.unsubscribe()
-        await self.nc.close()
+        # Close NATS (gracefully handle if already closed)
+        try:
+            if self.subscription:
+                await self.subscription.unsubscribe()
+        except Exception:
+            pass  # Already closed
+        
+        try:
+            await self.nc.close()
+        except Exception:
+            pass  # Already closed
         
         # Cleanup logging
         if self.file_handler:
@@ -380,6 +398,11 @@ class NATSSignalListener:
                 signal = SignalMessage.from_dict(message)
             except Exception as e:
                 logger.error(f"Failed to parse signal message: {e}")
+                return
+            
+            # Check symbol filter
+            if self._allowed_symbols and signal.symbol not in self._allowed_symbols:
+                logger.debug(f"Skipping signal for {signal.symbol} (not in allowed symbols)")
                 return
             
             # Validate signal

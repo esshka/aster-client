@@ -44,6 +44,9 @@ def main():
     parser.add_argument("--symbol", default=trading_config.get("default_symbol", "BTCUSDT"))
     args = parser.parse_args()
     
+    # Get allowed symbols filter from config
+    allowed_symbols = trading_config.get("allowed_symbols", [])
+    
     # Configure logging
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper()),
@@ -63,10 +66,15 @@ def main():
             subject=args.subject,
             config_path="accounts_config.yml",
             log_dir=args.log_dir,
+            allowed_symbols=allowed_symbols,
         )
         
         print(f"🚀 Starting NATS Signal Listener on {args.nats_url} (subject: '{args.subject}')")
         print(f"📊 BBO WebSocket symbol: {args.symbol}")
+        if allowed_symbols:
+            print(f"🎯 Filtering for symbols: {', '.join(allowed_symbols)}")
+        else:
+            print(f"🎯 Accepting all symbols (no filter)")
         
         # Handle shutdown gracefully
         loop = asyncio.get_event_loop()
