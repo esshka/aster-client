@@ -229,20 +229,23 @@ class NATSSignalListener:
             # Old behavior - should not happen anymore, but handle gracefully
             for key in list(self.positions.keys()):
                 if key.startswith(f"{account_id}:"):
-                    symbol = key.split(":", 1)[1]
+                    parts = key.split(":", 2)
+                    symbol = parts[1] if len(parts) >= 2 else ""
                     del self.positions[key]
                     if key in self.position_orders:
                         asyncio.create_task(self._cancel_position_orders(account_id, symbol, key))
         elif position.quantity == 0:
             # Position closed - cancel related orders
-            key = f"{account_id}:{position.symbol}"
+            # Use symbol:side as key for hedge mode
+            key = f"{account_id}:{position.symbol}:{position.side}"
             if key in self.positions:
                 del self.positions[key]
             if key in self.position_orders:
-                logger.info(f"[{account_id}] Position {position.symbol} closed, canceling SL/TP orders...")
+                logger.info(f"[{account_id}] Position {position.symbol} {position.side} closed, canceling SL/TP orders...")
                 asyncio.create_task(self._cancel_position_orders(account_id, position.symbol, key))
         else:
-            key = f"{account_id}:{position.symbol}"
+            # Use symbol:side as key for hedge mode
+            key = f"{account_id}:{position.symbol}:{position.side}"
             self.positions[key] = position
 
     async def _cancel_position_orders(self, account_id: str, symbol: str, key: str):
@@ -305,13 +308,14 @@ class NATSSignalListener:
         logger.info("Skipping symbol cache warmup (will cache SOLUSDT on-demand)")
 
         
-        # Start account WebSockets
+        # Start account WebSockets with allowed_symbols for read-only logic
         for acc_config in self.account_configs:
             ws = AccountWebSocket(
                 account_id=acc_config.id,
                 api_key=acc_config.api_key,
                 api_secret=acc_config.api_secret,
                 on_position_update=self._on_position_update,
+                allowed_symbols=self._allowed_symbols,
             )
             await ws.start()
             self.account_websockets[acc_config.id] = ws
@@ -529,8 +533,11 @@ class NATSSignalListener:
                 
                 logger.info(f"   [{acc_config.id}] Quantity: {quantity} (deposit={position_sizing.deposit_size})")
                 
-                key = f"{acc_config.id}:{signal.symbol}"
-                existing = self.positions.get(key)
+                # Check for existing opposite position using symbol:side format
+                # In hedge mode, we look for the opposite side
+                opposite_side = "SHORT" if signal.direction == "LONG" else "LONG"
+                key_opposite = f"{acc_config.id}:{signal.symbol}:{opposite_side}"
+                existing = self.positions.get(key_opposite)
                 
                 # If existing opposite position, close it first
                 if existing and existing.side != signal.direction and not existing.is_read_only:
@@ -546,8 +553,8 @@ class NATSSignalListener:
                         reduce_only=True,
                     )
                     
-                    # Create order tracking dict for the new position
-                    position_key = f"{acc_config.id}:{signal.symbol}"
+                    # Create order tracking dict for the new position (use symbol:side for hedge mode)
+                    position_key = f"{acc_config.id}:{signal.symbol}:{signal.direction}"
                     self.position_orders[position_key] = {"sl": None, "tp": []}
                     orders_ref = self.position_orders[position_key]
                     
@@ -646,8 +653,8 @@ class NATSSignalListener:
                         position_side=position_side,
                     )
                     
-                    # Create order tracking dict for this position
-                    position_key = f"{acc_config.id}:{signal.symbol}"
+                    # Create order tracking dict for this position (use symbol:side for hedge mode)
+                    position_key = f"{acc_config.id}:{signal.symbol}:{signal.direction}"
                     self.position_orders[position_key] = {"sl": None, "tp": []}
                     orders_ref = self.position_orders[position_key]
                     
@@ -746,11 +753,12 @@ class NATSSignalListener:
                 if not client:
                     continue
                 
-                key = f"{acc_config.id}:{signal.symbol}"
+                # Use symbol:side key for hedge mode
+                key = f"{acc_config.id}:{signal.symbol}:{signal.direction}"
                 position = self.positions.get(key)
                 
                 if not position:
-                    logger.info(f"[{acc_config.id}] No position to close")
+                    logger.info(f"[{acc_config.id}] No position to close for {signal.symbol} {signal.direction}")
                     continue
                 
                 if position.is_read_only:

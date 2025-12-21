@@ -62,6 +62,7 @@ class AccountWebSocket:
         base_url: str = DEFAULT_BASE_URL,
         on_position_update: Optional[Callable[[str, PositionState], None]] = None,
         on_order_update: Optional[Callable[[str, OrderUpdate], None]] = None,
+        allowed_symbols: Optional[set] = None,
     ):
         """
         Initialize account WebSocket.
@@ -73,6 +74,7 @@ class AccountWebSocket:
             base_url: REST API base URL for listenKey management
             on_position_update: Callback for position updates
             on_order_update: Callback for order updates
+            allowed_symbols: Set of symbols that are bot-managed (not read-only)
         """
         self.account_id = account_id
         self.credentials = ApiCredentials(api_key=api_key, api_secret=api_secret)
@@ -82,13 +84,16 @@ class AccountWebSocket:
         self.on_position_update = on_position_update
         self.on_order_update = on_order_update
         
+        # Symbols that are bot-managed (positions for these are NOT read-only)
+        self._allowed_symbols = allowed_symbols or set()
+        
         self.running = False
         self.ws_task: Optional[asyncio.Task] = None
         self.keepalive_task: Optional[asyncio.Task] = None
         self.listen_key: Optional[str] = None
         self.session: Optional[aiohttp.ClientSession] = None
         
-        # Position cache: symbol -> PositionState
+        # Position cache: symbol:side -> PositionState
         self.positions: Dict[str, PositionState] = {}
         
         # Track pre-existing positions as read-only
@@ -101,6 +106,9 @@ class AccountWebSocket:
         
         self.running = True
         self.session = aiohttp.ClientSession()
+        
+        # Fetch existing positions via REST API before WebSocket starts
+        await self._fetch_initial_positions()
         
         # Create listen key
         self.listen_key = await self._create_listen_key()
@@ -118,6 +126,92 @@ class AccountWebSocket:
         self.keepalive_task = asyncio.create_task(self._keepalive_loop())
         
         logger.info(f"[{self.account_id}] Account WebSocket started")
+    
+    async def _fetch_initial_positions(self):
+        """Fetch existing positions via REST API to populate cache."""
+        try:
+            import hashlib
+            import hmac
+            from urllib.parse import urlencode
+            
+            url = f"{self.base_url}/fapi/v2/positionRisk"
+            
+            # Generate signature the same way as http_client.py
+            timestamp = str(int(time.time() * 1000))
+            auth_params = {
+                "timestamp": timestamp,
+                "recvWindow": self.signer.recv_window,
+            }
+            
+            # Create signature from sorted query string
+            query_string = urlencode(sorted(auth_params.items()))
+            signature = hmac.new(
+                self.credentials.api_secret.encode(),
+                query_string.encode(),
+                hashlib.sha256,
+            ).hexdigest()
+            
+            # Build params list with signature last (order matters!)
+            params_list = sorted(auth_params.items())
+            params_list.append(("signature", signature))
+            
+            headers = self.signer.get_auth_headers()
+            
+            async with self.session.get(url, params=params_list, headers=headers) as resp:
+                if resp.status == 200:
+                    positions = await resp.json()
+                    for pos in positions:
+                        symbol = pos.get("symbol")
+                        position_amt = Decimal(str(pos.get("positionAmt", "0")))
+                        entry_price = Decimal(str(pos.get("entryPrice", "0")))
+                        position_side = pos.get("positionSide", "BOTH")
+                        
+                        if position_amt == 0:
+                            continue  # No position
+                        
+                        # Determine side
+                        if position_side in ("LONG", "SHORT"):
+                            side = position_side
+                        else:
+                            side = "LONG" if position_amt > 0 else "SHORT"
+                        
+                        # Position key for hedge mode
+                        position_key = f"{symbol}:{side}" if position_side in ("LONG", "SHORT") else symbol
+                        
+                        # Check if allowed symbol (not read-only)
+                        is_read_only = symbol not in self._allowed_symbols
+                        
+                        position = PositionState(
+                            symbol=symbol,
+                            account_id=self.account_id,
+                            side=side,
+                            quantity=abs(position_amt),
+                            entry_price=entry_price,
+                            is_read_only=is_read_only,
+                        )
+                        
+                        self.positions[position_key] = position
+                        
+                        logger.info(
+                            f"[{self.account_id}] Initial position: {symbol} {side} "
+                            f"{abs(position_amt)} @ {entry_price}"
+                            + (" [READ-ONLY]" if is_read_only else "")
+                        )
+                        
+                        # Notify listener
+                        if self.on_position_update:
+                            self.on_position_update(self.account_id, position)
+                    
+                    if not self.positions:
+                        logger.info(f"[{self.account_id}] No open positions")
+                    
+                    # Mark as initialized after fetching
+                    self._initialized = True
+                else:
+                    error = await resp.text()
+                    logger.error(f"[{self.account_id}] Failed to fetch positions: {error}")
+        except Exception as e:
+            logger.error(f"[{self.account_id}] Error fetching initial positions: {e}")
 
     async def stop(self):
         """Stop the WebSocket connection."""
@@ -270,25 +364,32 @@ class AccountWebSocket:
             entry_price = Decimal(str(pos.get("ep", "0")))
             position_side = pos.get("ps", "BOTH")  # LONG, SHORT, or BOTH
             
+            # Use symbol:side as key for hedge mode to avoid cross-interference
+            position_key = f"{symbol}:{position_side}" if position_side in ("LONG", "SHORT") else symbol
+            
             if position_amount == 0:
-                # Position closed
-                if symbol in self.positions:
-                    closed_position = self.positions[symbol]
-                    logger.info(f"[{self.account_id}] Position closed: {symbol}")
-                    del self.positions[symbol]
+                # Position closed - only if we're tracking this specific side
+                if position_key in self.positions:
+                    closed_position = self.positions[position_key]
+                    logger.info(f"[{self.account_id}] Position closed: {symbol} {position_side}")
+                    del self.positions[position_key]
                     if self.on_position_update:
                         # Send closed position (with quantity=0) to include symbol info
                         closed_position.quantity = Decimal("0")
                         self.on_position_update(self.account_id, closed_position)
             else:
-                # Determine side from amount or position_side field
+                # Determine side from position_side field or amount
                 if position_side in ("LONG", "SHORT"):
                     side = position_side
                 else:
                     side = "LONG" if position_amount > 0 else "SHORT"
                 
-                # Check if this is a new position (for read-only flag)
-                is_read_only = not self._initialized and symbol not in self.positions
+                # Positions for allowed_symbols are bot-managed (not read-only)
+                # Positions for other symbols (pre-existing or manually opened) are read-only
+                if symbol in self._allowed_symbols:
+                    is_read_only = False  # Bot can manage this symbol
+                else:
+                    is_read_only = not self._initialized and position_key not in self.positions
                 
                 position = PositionState(
                     symbol=symbol,
@@ -299,7 +400,7 @@ class AccountWebSocket:
                     is_read_only=is_read_only,
                 )
                 
-                self.positions[symbol] = position
+                self.positions[position_key] = position
                 
                 logger.info(
                     f"[{self.account_id}] Position updated: {symbol} {side} "
@@ -343,32 +444,52 @@ class AccountWebSocket:
         if self.on_order_update:
             self.on_order_update(self.account_id, order_update)
 
-    def get_position(self, symbol: str) -> Optional[PositionState]:
+    def get_position(self, symbol: str, side: Optional[str] = None) -> Optional[PositionState]:
         """
         Get current position for a symbol.
         
         Args:
             symbol: Trading symbol
+            side: Position side (LONG/SHORT) for hedge mode, None for one-way mode
             
         Returns:
             PositionState or None if no position
         """
-        return self.positions.get(symbol)
+        if side:
+            key = f"{symbol}:{side}"
+            return self.positions.get(key)
+        # Try both formats
+        return self.positions.get(symbol) or self.positions.get(f"{symbol}:LONG") or self.positions.get(f"{symbol}:SHORT")
 
-    def has_position(self, symbol: str) -> bool:
+    def has_position(self, symbol: str, side: Optional[str] = None) -> bool:
         """Check if there's an open position for symbol."""
-        return symbol in self.positions
+        if side:
+            return f"{symbol}:{side}" in self.positions
+        return symbol in self.positions or f"{symbol}:LONG" in self.positions or f"{symbol}:SHORT" in self.positions
 
     def get_all_positions(self) -> Dict[str, PositionState]:
         """Get all open positions."""
         return self.positions.copy()
 
-    def clear_position(self, symbol: str):
+    def clear_position(self, symbol: str, side: Optional[str] = None):
         """Clear position from local cache (e.g., after manual close)."""
-        if symbol in self.positions:
-            del self.positions[symbol]
+        if side:
+            key = f"{symbol}:{side}"
+            if key in self.positions:
+                del self.positions[key]
+        else:
+            # Clear all matching
+            for key in list(self.positions.keys()):
+                if key == symbol or key.startswith(f"{symbol}:"):
+                    del self.positions[key]
 
-    def mark_position_managed(self, symbol: str):
+    def mark_position_managed(self, symbol: str, side: Optional[str] = None):
         """Mark a position as bot-managed (not read-only)."""
-        if symbol in self.positions:
-            self.positions[symbol].is_read_only = False
+        if side:
+            key = f"{symbol}:{side}"
+            if key in self.positions:
+                self.positions[key].is_read_only = False
+        else:
+            for key in self.positions:
+                if key == symbol or key.startswith(f"{symbol}:"):
+                    self.positions[key].is_read_only = False
