@@ -128,6 +128,10 @@ class NATSSignalListener:
         # Key: f"{account_id}:{symbol}" -> PositionState
         self.positions: Dict[str, PositionState] = {}
         
+        # Order tracking for auto-cancel when position closes
+        # Key: f"{account_id}:{symbol}" -> {"sl": order_id, "tp": [order_ids]}
+        self.position_orders: Dict[str, Dict[str, Any]] = {}
+        
         # Market data
         self.public_client = AsterPublicClient(auto_warmup=False)
         self.bbo_calculator = BBOPriceCalculator()
@@ -217,13 +221,55 @@ class NATSSignalListener:
     def _on_position_update(self, account_id: str, position: Optional[PositionState]):
         """Callback for WebSocket position updates."""
         if position is None:
-            # Position closed - remove from tracking
+            # Position closed - remove from tracking and cancel related orders
             for key in list(self.positions.keys()):
                 if key.startswith(f"{account_id}:"):
+                    symbol = key.split(":", 1)[1]
                     del self.positions[key]
+                    
+                    # Cancel any SL/TP orders for this position
+                    if key in self.position_orders:
+                        asyncio.create_task(self._cancel_position_orders(account_id, symbol, key))
         else:
             key = f"{account_id}:{position.symbol}"
             self.positions[key] = position
+
+    async def _cancel_position_orders(self, account_id: str, symbol: str, key: str):
+        """Cancel all SL/TP orders for a closed position."""
+        orders = self.position_orders.pop(key, {})
+        if not orders:
+            return
+        
+        # Get the account client
+        acc_config = next((a for a in self.account_configs if a.id == account_id), None)
+        if not acc_config:
+            return
+        
+        try:
+            async with AccountPool([acc_config]) as pool:
+                client = pool.get_client(account_id)
+                if not client:
+                    return
+                
+                # Cancel SL order
+                sl_order_id = orders.get("sl")
+                if sl_order_id:
+                    try:
+                        await client.cancel_order(symbol=symbol, order_id=sl_order_id)
+                        logger.info(f"[{account_id}] Canceled SL order {sl_order_id} (position closed)")
+                    except Exception as e:
+                        logger.debug(f"[{account_id}] SL order {sl_order_id} cancel failed (may already be filled): {e}")
+                
+                # Cancel TP orders
+                tp_order_ids = orders.get("tp", [])
+                for tp_order_id in tp_order_ids:
+                    try:
+                        await client.cancel_order(symbol=symbol, order_id=tp_order_id)
+                        logger.info(f"[{account_id}] Canceled TP order {tp_order_id} (position closed)")
+                    except Exception as e:
+                        logger.debug(f"[{account_id}] TP order {tp_order_id} cancel failed (may already be filled): {e}")
+        except Exception as e:
+            logger.error(f"[{account_id}] Error canceling orders for {symbol}: {e}")
 
     async def start(self):
         """Start the signal listener."""
@@ -477,7 +523,12 @@ class NATSSignalListener:
                         reduce_only=True,
                     )
                     
-                    async def close_and_open_with_tp(c, acc_id, close_req, open_qty, signal):
+                    # Create order tracking dict for the new position
+                    position_key = f"{acc_config.id}:{signal.symbol}"
+                    self.position_orders[position_key] = {"sl": None, "tp": []}
+                    orders_ref = self.position_orders[position_key]
+                    
+                    async def close_and_open_with_tp(c, acc_id, close_req, open_qty, signal, step_size, orders_tracker):
                         """Close existing position, then open new with SL and limit TP orders."""
                         # Close existing
                         try:
@@ -519,6 +570,7 @@ class NATSSignalListener:
                                 )
                                 try:
                                     sl_result = await c.place_order(sl_request)
+                                    orders_tracker["sl"] = sl_result.order_id
                                     logger.info(f"[{acc_id}] SL placed: {sl_result.order_id} @ {signal.stop_loss}")
                                 except Exception as e:
                                     logger.error(f"[{acc_id}] Failed to place SL: {e}")
@@ -527,9 +579,8 @@ class NATSSignalListener:
                             if signal.tp_levels:
                                 remaining_qty = open_qty
                                 for i, tp in enumerate(signal.tp_levels, 1):
-                                    tp_qty = (open_qty * Decimal(str(tp.exit_pct))).quantize(
-                                        Decimal("1"), rounding=ROUND_DOWN
-                                    )
+                                    tp_qty = open_qty * Decimal(str(tp.exit_pct))
+                                    tp_qty = (tp_qty / step_size).quantize(Decimal("1"), rounding=ROUND_DOWN) * step_size
                                     if i == len(signal.tp_levels):
                                         tp_qty = remaining_qty
                                     if tp_qty <= 0:
@@ -547,6 +598,7 @@ class NATSSignalListener:
                                     )
                                     try:
                                         tp_result = await c.place_order(tp_request)
+                                        orders_tracker["tp"].append(tp_result.order_id)
                                         logger.info(f"[{acc_id}] TP{i} placed: {tp_result.order_id} @ {tp.price} ({tp_qty} qty)")
                                     except Exception as e:
                                         logger.error(f"[{acc_id}] Failed to place TP{i}: {e}")
@@ -556,7 +608,7 @@ class NATSSignalListener:
                             logger.error(f"[{acc_id}] Failed to open position: {e}")
                             return None
                     
-                    task = close_and_open_with_tp(client, acc_config.id, close_request, quantity, signal)
+                    task = close_and_open_with_tp(client, acc_config.id, close_request, quantity, signal, contract_size, orders_ref)
                     tasks.append(task)
                 else:
                     # Just open new position
@@ -571,11 +623,17 @@ class NATSSignalListener:
                         position_side=position_side,
                     )
                     
-                    async def open_position_with_tp(c, acc_id, req, sl_price, symbol, direction, total_qty, tp_levels):
+                    # Create order tracking dict for this position
+                    position_key = f"{acc_config.id}:{signal.symbol}"
+                    self.position_orders[position_key] = {"sl": None, "tp": []}
+                    orders_ref = self.position_orders[position_key]
+                    
+                    async def open_position_with_tp(c, acc_id, req, sl_price, symbol, direction, total_qty, tp_levels, step_size, orders_tracker):
                         """
                         Open position with market order, then place:
                         1. SL order (stop_market, close_position=True)
-                        2. Limit TP orders for each TP level (reduce_only)
+                        2. Limit TP orders for each TP level
+                        Tracks order IDs in orders_tracker for auto-cancel.
                         """
                         try:
                             result = await c.place_order(req)
@@ -596,6 +654,7 @@ class NATSSignalListener:
                                 )
                                 try:
                                     sl_result = await c.place_order(sl_request)
+                                    orders_tracker["sl"] = sl_result.order_id
                                     logger.info(f"[{acc_id}] SL placed: {sl_result.order_id} @ {sl_price}")
                                 except Exception as e:
                                     logger.error(f"[{acc_id}] Failed to place SL: {e}")
@@ -604,10 +663,9 @@ class NATSSignalListener:
                             if tp_levels:
                                 remaining_qty = total_qty
                                 for i, tp in enumerate(tp_levels, 1):
-                                    # Calculate quantity for this TP level
-                                    tp_qty = (total_qty * Decimal(str(tp.exit_pct))).quantize(
-                                        Decimal("1"), rounding=ROUND_DOWN
-                                    )
+                                    # Calculate quantity for this TP level using step_size for rounding
+                                    tp_qty = total_qty * Decimal(str(tp.exit_pct))
+                                    tp_qty = (tp_qty / step_size).quantize(Decimal("1"), rounding=ROUND_DOWN) * step_size
                                     
                                     # For last TP level, use remaining quantity
                                     if i == len(tp_levels):
@@ -629,6 +687,7 @@ class NATSSignalListener:
                                     )
                                     try:
                                         tp_result = await c.place_order(tp_request)
+                                        orders_tracker["tp"].append(tp_result.order_id)
                                         logger.info(f"[{acc_id}] TP{i} placed: {tp_result.order_id} @ {tp.price} ({tp_qty} qty, {tp.exit_pct*100:.0f}%)")
                                     except Exception as e:
                                         logger.error(f"[{acc_id}] Failed to place TP{i} @ {tp.price}: {e}")
@@ -641,7 +700,7 @@ class NATSSignalListener:
                     task = open_position_with_tp(
                         client, acc_config.id, request,
                         signal.stop_loss, signal.symbol, signal.direction,
-                        quantity, signal.tp_levels
+                        quantity, signal.tp_levels, contract_size, orders_ref
                     )
                     tasks.append(task)
             
@@ -697,7 +756,6 @@ class NATSSignalListener:
                         order_type="market",
                         quantity=qty,
                         position_side=pos_side,
-                        reduce_only=True,
                     )
                     
                     try:
